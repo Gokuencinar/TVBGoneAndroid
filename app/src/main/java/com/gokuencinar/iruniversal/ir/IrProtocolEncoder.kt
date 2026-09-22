@@ -89,7 +89,9 @@ object IrProtocolEncoder {
                 frame += if (((payload shr bit) and 1L) == 1L) 1200 else 600
                 frame += 600
             }
-            frame.removeLast()
+            // Avoid java.util.List.removeLast(), which only exists on newer
+            // Android runtimes when compiling against API 35. minSdk is 30.
+            frame.removeAt(frame.lastIndex)
             val used = frame.sum()
             frame += if (used < 45_000) 45_000 - used else 1
             all += frame

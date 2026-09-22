@@ -107,7 +107,11 @@ class IrLearner {
         val firstUseful = raw.indexOfFirst { it < 30_000 }.coerceAtLeast(0)
         val trimmed = raw.drop(firstUseful).take(6000).toMutableList()
 
-        while (trimmed.isNotEmpty() && trimmed.last() > 80_000) trimmed.removeLast()
+        while (trimmed.isNotEmpty() && trimmed.last() > 80_000) {
+            // Keep this compatible with Android 11: MutableList.removeLast()
+            // may compile to java.util.List.removeLast() against API 35.
+            trimmed.removeAt(trimmed.lastIndex)
+        }
         return trimmed
     }
 }

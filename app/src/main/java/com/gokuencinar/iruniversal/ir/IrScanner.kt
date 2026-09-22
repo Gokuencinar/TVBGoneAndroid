@@ -3,6 +3,7 @@ package com.gokuencinar.iruniversal.ir
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
     data class Progress(
@@ -16,28 +17,26 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
     private val executor = Executors.newSingleThreadExecutor()
     private val stopped = AtomicBoolean(true)
     private val paused = AtomicBoolean(false)
+    private val generation = AtomicLong(0)
     private val recent = ArrayDeque<IrCode>()
-    @Volatile private var currentCodes: List<IrCode> = emptyList()
-    @Volatile private var currentIndex = 0
-    @Volatile private var pace = ScanPace.FAST
 
     fun start(codes: List<IrCode>, pace: ScanPace, callback: (Progress) -> Unit) {
-        stop()
-        currentCodes = codes
-        currentIndex = 0
-        this.pace = pace
-        recent.clear()
+        val scanGeneration = generation.incrementAndGet()
+        val scanCodes = codes.toList()
+        synchronized(recent) { recent.clear() }
         stopped.set(false)
         paused.set(false)
 
         executor.execute {
-            while (!stopped.get() && currentIndex < currentCodes.size) {
+            var index = 0
+            while (!stopped.get() && generation.get() == scanGeneration && index < scanCodes.size) {
                 if (paused.get()) {
-                    Thread.sleep(40)
+                    if (!sleep(40)) break
                     continue
                 }
 
-                val code = currentCodes[currentIndex]
+                val code = scanCodes[index]
+                var error: String? = null
                 try {
                     transmitterProvider().send(code)
                     synchronized(recent) {
@@ -45,18 +44,21 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
                         recent.addLast(code)
                         while (recent.size > 8) recent.removeFirst()
                     }
-                    currentIndex++
-                    callback(Progress(currentIndex, currentCodes.size, code, false))
                 } catch (e: Exception) {
-                    currentIndex++
-                    callback(Progress(currentIndex, currentCodes.size, code, false, e.message))
+                    error = e.message ?: e.javaClass.simpleName
                 }
 
-                if (!stopped.get()) Thread.sleep(pace.gapMillis)
+                if (stopped.get() || generation.get() != scanGeneration) break
+                index++
+                callback(Progress(index, scanCodes.size, code, false, error))
+
+                if (!stopped.get() && generation.get() == scanGeneration && !sleep(pace.gapMillis)) {
+                    break
+                }
             }
 
-            if (!stopped.get()) {
-                callback(Progress(currentCodes.size, currentCodes.size, null, false))
+            if (!stopped.get() && generation.get() == scanGeneration && index >= scanCodes.size) {
+                callback(Progress(scanCodes.size, scanCodes.size, null, false))
                 stopped.set(true)
             }
         }
@@ -64,11 +66,28 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
 
     fun pause() { paused.set(true) }
     fun resume() { paused.set(false) }
-    fun stop() { stopped.set(true); paused.set(false) }
+    fun stop() {
+        generation.incrementAndGet()
+        stopped.set(true)
+        paused.set(false)
+    }
     fun isRunning(): Boolean = !stopped.get()
     fun isPaused(): Boolean = paused.get()
 
     fun candidates(): List<IrCode> = synchronized(recent) {
         recent.toList().asReversed().take(4)
+    }
+
+    fun close() {
+        stop()
+        executor.shutdownNow()
+    }
+
+    private fun sleep(millis: Long): Boolean = try {
+        Thread.sleep(millis)
+        true
+    } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        false
     }
 }

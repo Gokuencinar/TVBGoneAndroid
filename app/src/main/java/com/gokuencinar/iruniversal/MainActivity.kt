@@ -791,7 +791,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        scanner.stop()
+        scanner.close()
         worker.shutdownNow()
         super.onDestroy()
     }
