@@ -1,6 +1,6 @@
 # IR Universal Android — estado del port
 
-Este directorio contiene la reimplementación Android de TVBGoneAudio / IR Universal.
+Este repositorio contiene la reimplementación Android independiente de TVBGoneAudio / IR Universal.
 
 ## Objetivo actual
 
@@ -47,9 +47,9 @@ la base Flipper POWER/OFF offline todavía no se empaqueta dentro del APK.
 ## Compilar
 
 Se usa Android Gradle Plugin 8.9.2, Gradle 8.11.1 y Java 17.
-El APK de depuración se genera automáticamente por GitHub Actions en la rama `android-port`.
+El APK de depuración se genera automáticamente por GitHub Actions desde la rama `main`.
 
-También puede compilarse desde Android Studio abriendo la carpeta `Android`.
+También puede compilarse desde Android Studio abriendo directamente la raíz de este repositorio.
 
 ## Hardware
 
