@@ -19,3 +19,5 @@ jobs:
         run: |
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}" \
             -f description="TVBGoneAndroid — app Android para controlar dispositivos IR mediante blaster integrado o adaptador IR por audio. Compatible con Android 11+."
+
+# Trigger.
