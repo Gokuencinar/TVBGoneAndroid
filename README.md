@@ -1,6 +1,6 @@
 # TVBGoneAndroid
 
-Versión Android de **TV-B-Gone / IR Universal**, una aplicación para enviar códigos infrarrojos de apagado/control a televisores y otros equipos compatibles usando el emisor IR integrado del teléfono o un adaptador IR conectado por audio.
+**TVBGoneAndroid** es una aplicación para Android que permite enviar códigos infrarrojos de apagado/control a televisores y otros equipos compatibles usando el emisor IR integrado del teléfono o un adaptador IR conectado por audio.
 
 **Compatibilidad:** Android 11 o posterior (`minSdk 30`).
 
