@@ -157,7 +157,7 @@ class MainActivity : Activity() {
 
     private fun showControl() {
         val screen = beginScreen()
-        val body = installScreenBody("IR Universal")
+        val body = installScreenBody("TVBGoneAndroid")
 
         body.addView(controlHero(), spacedMatch(4))
         body.addView(accessoryStatusCard(), spacedMatch(16))
@@ -1949,7 +1949,7 @@ class MainActivity : Activity() {
                 background = circleDrawable(Color.argb(40, 255, 59, 48))
             }
             addView(icon, LinearLayout.LayoutParams(dp(104), dp(104)))
-            addView(bodyText("IR UNIVERSAL", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+            addView(bodyText("TVBGONEANDROID", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
                 letterSpacing = 0.16f
                 setPadding(0, dp(12), 0, dp(7))
