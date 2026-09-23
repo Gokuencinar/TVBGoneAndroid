@@ -1,6 +1,6 @@
-# IR Universal Android — estado del port
+# TVBGoneAndroid — estado del port
 
-Este repositorio contiene la reimplementación Android independiente de TVBGoneAudio / IR Universal.
+Este repositorio contiene **TVBGoneAndroid**, la versión Android independiente basada en TVBGoneAudio.
 
 ## Objetivo actual
 
