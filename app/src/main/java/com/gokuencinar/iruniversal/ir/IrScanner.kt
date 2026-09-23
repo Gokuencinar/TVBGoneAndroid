@@ -3,6 +3,7 @@ package com.gokuencinar.iruniversal.ir
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
@@ -18,18 +19,24 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
     private val stopped = AtomicBoolean(true)
     private val paused = AtomicBoolean(false)
     private val generation = AtomicLong(0)
+    private val pendingStep = AtomicInteger(0)
     private val recent = ArrayDeque<IrCode>()
 
     fun start(codes: List<IrCode>, pace: ScanPace, callback: (Progress) -> Unit) {
         val scanGeneration = generation.incrementAndGet()
         val scanCodes = codes.toList()
         synchronized(recent) { recent.clear() }
+        pendingStep.set(0)
         stopped.set(false)
         paused.set(false)
 
         executor.execute {
             var index = 0
             while (!stopped.get() && generation.get() == scanGeneration && index < scanCodes.size) {
+                val requestedStep = pendingStep.getAndSet(0)
+                if (requestedStep != 0 && scanCodes.isNotEmpty()) {
+                    index = (index + requestedStep).coerceIn(0, scanCodes.lastIndex)
+                }
                 if (paused.get()) {
                     if (!sleep(40)) break
                     continue
@@ -66,10 +73,16 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
 
     fun pause() { paused.set(true) }
     fun resume() { paused.set(false) }
+    fun step(delta: Int) {
+        if (!stopped.get() && delta != 0) {
+            pendingStep.addAndGet(delta.coerceIn(-1, 1))
+        }
+    }
     fun stop() {
         generation.incrementAndGet()
         stopped.set(true)
         paused.set(false)
+        pendingStep.set(0)
     }
     fun isRunning(): Boolean = !stopped.get()
     fun isPaused(): Boolean = paused.get()

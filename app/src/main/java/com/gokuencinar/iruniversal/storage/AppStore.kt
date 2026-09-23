@@ -14,6 +14,13 @@ data class SavedDevice(
     val code: IrCode
 )
 
+data class WorkedRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val createdAt: Long = System.currentTimeMillis(),
+    val category: DeviceCategory,
+    val code: IrCode
+)
+
 class AppStore(context: Context) {
     private val prefs = context.getSharedPreferences("ir_universal_android", Context.MODE_PRIVATE)
 
@@ -68,6 +75,47 @@ class AppStore(context: Context) {
         prefs.edit().putString("learned_codes", array.toString()).apply()
     }
 
+    fun loadWorked(): MutableList<WorkedRecord> {
+        val raw = prefs.getString("worked_history", null) ?: return mutableListOf()
+        return runCatching {
+            val array = JSONArray(raw)
+            MutableList(array.length()) { index ->
+                val o = array.getJSONObject(index)
+                WorkedRecord(
+                    id = o.getString("id"),
+                    createdAt = o.getLong("createdAt"),
+                    category = DeviceCategory.valueOf(o.getString("category")),
+                    code = codeFromJson(o.getJSONObject("code"))
+                )
+            }
+        }.getOrDefault(mutableListOf())
+    }
+
+    fun saveWorked(records: List<WorkedRecord>) {
+        val array = JSONArray()
+        records.take(50).forEach { record ->
+            array.put(
+                JSONObject()
+                    .put("id", record.id)
+                    .put("createdAt", record.createdAt)
+                    .put("category", record.category.name)
+                    .put("code", codeToJson(record.code))
+            )
+        }
+        prefs.edit().putString("worked_history", array.toString()).apply()
+    }
+
+    fun addWorked(category: DeviceCategory, code: IrCode) {
+        val records = loadWorked()
+        records.removeAll { it.code.id == code.id }
+        records.add(0, WorkedRecord(category = category, code = code))
+        saveWorked(records)
+    }
+
+    fun clearWorked() {
+        prefs.edit().remove("worked_history").apply()
+    }
+
     fun exportBackup(): String {
         val root = JSONObject()
         val devices = JSONArray()
@@ -82,10 +130,21 @@ class AppStore(context: Context) {
         }
         val learned = JSONArray()
         loadLearned().forEach { learned.put(codeToJson(it)) }
+        val worked = JSONArray()
+        loadWorked().forEach { record ->
+            worked.put(
+                JSONObject()
+                    .put("id", record.id)
+                    .put("createdAt", record.createdAt)
+                    .put("category", record.category.name)
+                    .put("code", codeToJson(record.code))
+            )
+        }
         root.put("format", "IRUniversalAndroidBackup")
         root.put("version", 1)
         root.put("devices", devices)
         root.put("learned", learned)
+        root.put("worked", worked)
         return root.toString(2)
     }
 

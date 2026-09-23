@@ -39,6 +39,35 @@ data class OnlineLoadedRemote(
 class OnlineIrLibrary {
     private val textCache = mutableMapOf<String, String>()
 
+    fun brands(
+        category: DeviceCategory,
+        sources: List<OnlineIrSource> = OnlineIrSource.entries
+    ): List<String> {
+        val found = mutableListOf<String>()
+        sources.forEach { source ->
+            runCatching {
+                when (source) {
+                    OnlineIrSource.FLIPPER_COMMUNITY -> found += brandsFromGitHubTree(
+                        "https://api.github.com/repos/Lucaslhm/Flipper-IRDB/git/trees/main?recursive=1",
+                        source,
+                        category
+                    )
+                    OnlineIrSource.FLIPPER_OFFICIAL -> found += brandsFromGitHubTree(
+                        "https://api.github.com/repos/flipperdevices/IRDB/git/trees/dev?recursive=1",
+                        source,
+                        category
+                    )
+                    OnlineIrSource.LEGACY_IRDB -> found += brandsFromLegacy(category)
+                }
+            }
+        }
+        return found
+            .map { it.replace("_", " ").trim() }
+            .filter { it.isNotBlank() && !it.equals("unknown", true) && !it.equals("desconocida", true) }
+            .distinctBy { clean(it) }
+            .sortedWith(String.CASE_INSENSITIVE_ORDER)
+    }
+
     fun search(
         brand: String,
         model: String,
@@ -100,6 +129,39 @@ class OnlineIrLibrary {
         val name = URL(normalizedUrl(url)).path.substringAfterLast('/').substringBeforeLast('.')
             .replace("_", " ").ifBlank { "Mando importado" }
         return OnlineLoadedRemote(name, "URL · " + URL(url).host, signals)
+    }
+
+    private fun brandsFromGitHubTree(
+        treeUrl: String,
+        source: OnlineIrSource,
+        category: DeviceCategory
+    ): List<String> {
+        val root = JSONObject(fetchText(treeUrl, 20_000_000))
+        if (root.optBoolean("truncated", false)) error("El índice de GitHub llegó truncado.")
+        val tree = root.getJSONArray("tree")
+        val out = mutableListOf<String>()
+        for (i in 0 until tree.length()) {
+            val entry = tree.getJSONObject(i)
+            if (entry.optString("type") != "blob") continue
+            val path = entry.optString("path")
+            if (!path.lowercase().endsWith(".ir")) continue
+            if (!categoryMatches(path, category, source)) continue
+            val brand = guessBrand(path.split("/"), source)
+            if (brand.isNotBlank()) out += brand
+        }
+        return out
+    }
+
+    private fun brandsFromLegacy(category: DeviceCategory): List<String> {
+        val indexUrl = "https://cdn.jsdelivr.net/gh/probonopd/irdb@master/codes/index"
+        return fetchText(indexUrl, 8_000_000).lineSequence().mapNotNull { raw ->
+            val path = raw.trim()
+            if (!path.lowercase().endsWith(".csv")) return@mapNotNull null
+            val parts = path.split("/")
+            if (parts.size < 3) return@mapNotNull null
+            if (!legacyCategoryMatches(parts[1], category)) return@mapNotNull null
+            parts[0].takeIf { it.isNotBlank() }
+        }.toList()
     }
 
     private fun searchGitHubTree(

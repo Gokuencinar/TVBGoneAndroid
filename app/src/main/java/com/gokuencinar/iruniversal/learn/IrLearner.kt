@@ -1,6 +1,11 @@
 package com.gokuencinar.iruniversal.learn
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import com.gokuencinar.iruniversal.ir.IrCode
@@ -8,15 +13,59 @@ import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
 
-class IrLearner {
+class IrLearner(context: Context) {
+    private val appContext = context.applicationContext
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
     data class CaptureResult(
         val code: IrCode?,
         val message: String,
         val sampleRate: Int
     )
 
+    data class InputInfo(
+        val description: String,
+        val isExternal: Boolean,
+        val inputChannels: Int
+    )
+
+    fun inspectInput(): InputInfo {
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        val external = devices.firstOrNull {
+            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+        }
+        if (external != null) {
+            val channels = external.channelCounts.maxOrNull() ?: 1
+            return InputInfo(
+                external.productName?.toString()?.ifBlank { "Entrada de audio externa" }
+                    ?: "Entrada de audio externa",
+                true,
+                channels.coerceAtLeast(1)
+            )
+        }
+        val internal = devices.firstOrNull()
+        return InputInfo(
+            internal?.productName?.toString()?.ifBlank { "Micrófono interno" } ?: "Micrófono interno",
+            false,
+            internal?.channelCounts?.maxOrNull()?.coerceAtLeast(1) ?: 0
+        )
+    }
+
     fun capture(carrierHz: Int = 38_000, captureMillis: Int = 1300): CaptureResult {
         val sampleRate = 48_000
+        if (appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            return CaptureResult(null, "No hay permiso de micrófono para capturar la señal IR.", sampleRate)
+        }
+        val input = inspectInput()
+        if (!input.isExternal) {
+            return CaptureResult(
+                null,
+                "No se detecta una entrada de audio externa. El micrófono interno no sirve para aprender IR con este accesorio.",
+                sampleRate
+            )
+        }
         val minBuffer = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,

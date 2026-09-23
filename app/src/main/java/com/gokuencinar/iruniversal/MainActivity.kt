@@ -4,8 +4,11 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
@@ -27,20 +30,37 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
     private lateinit var contentHost: FrameLayout
+    private lateinit var bottomBar: LinearLayout
     private lateinit var transmitter: AutoIrTransmitter
     private lateinit var scanner: IrScanner
     private lateinit var store: AppStore
+    private lateinit var preferences: SharedPreferences
 
     private val worker = Executors.newSingleThreadExecutor()
     private val onlineLibrary = OnlineIrLibrary()
-    private val learner = IrLearner()
+    private lateinit var learner: IrLearner
 
     private var learnedCandidate: IrCode? = null
     private var importedSignals: List<ImportedIrSignal> = emptyList()
+    private var screenGeneration = 0L
+    private var selectedCategory = DeviceCategory.TELEVISION
+    private var selectedRegion = TvRegion.EUROPE
+    private var selectedPace = ScanPace.FAST
+    private var selectedLearnCarrierIndex = 0
+    private var currentTab = 0
+    private val bottomTabViews = mutableListOf<LinearLayout>()
 
     companion object {
         private const val REQUEST_MIC = 1001
         private const val REQUEST_IMPORT_IR = 1002
+        private const val PREF_BROWSER_MODE = "irUniversal.localBrowserPresentation"
+        private const val PREF_ONLINE_BROWSER_MODE = "irUniversal.onlineBrowserPresentation"
+        private const val PREF_OLED_MODE = "irUniversal.oledMode"
+        private val IOS_RED = Color.rgb(255, 59, 48)
+        private val IOS_GREEN = Color.rgb(52, 199, 89)
+        private val IOS_SECONDARY = Color.rgb(142, 142, 147)
+        private val IOS_SURFACE = Color.argb(14, 255, 255, 255)
+        private val IOS_BORDER = Color.argb(20, 255, 255, 255)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,47 +69,16 @@ class MainActivity : Activity() {
         transmitter = AutoIrTransmitter(this)
         scanner = IrScanner { transmitter.active() }
         store = AppStore(this)
+        learner = IrLearner(applicationContext)
+        preferences = getSharedPreferences("ir_universal_android", MODE_PRIVATE)
+
+        window.statusBarColor = Color.BLACK
+        window.navigationBarColor = Color.BLACK
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
-
-        val header = TextView(this).apply {
-            text = "IR Universal · Android"
-            textSize = 23f
-            setTextColor(Color.WHITE)
-            setPadding(dp(18), dp(18), dp(18), dp(10))
-        }
-        root.addView(header, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-
-        val tabsScroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-        }
-        val tabs = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), 0, dp(8), dp(8))
-        }
-        tabsScroll.addView(tabs)
-
-        listOf(
-            "Control" to { showControl() },
-            "Códigos" to { showCodes() },
-            "Online" to { showOnline() },
-            "Aprender" to { showLearn() },
-            "Equipos" to { showSavedDevices() },
-            "Diagnóstico" to { showDiagnostics() }
-        ).forEach { (title, action) ->
-            tabs.addView(tabButton(title, action))
-        }
-
-        root.addView(tabsScroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
 
         contentHost = FrameLayout(this)
         root.addView(contentHost, LinearLayout.LayoutParams(
@@ -98,73 +87,294 @@ class MainActivity : Activity() {
             1f
         ))
 
+        bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(5), dp(4), dp(3))
+            setBackgroundColor(Color.BLACK)
+        }
+        root.addView(bottomBar, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(64)
+        ))
+
+        addBottomTab("Control", R.drawable.ic_tab_power, 0)
+        addBottomTab("Códigos", R.drawable.ic_tab_codes, 1)
+        addBottomTab("Mis equipos", R.drawable.ic_tab_star, 2)
+        addBottomTab("Aprender", R.drawable.ic_tab_mic, 3)
+        addBottomTab("Diagnóstico", R.drawable.ic_tab_diagnostics, 4)
+
         setContentView(root)
-        showControl()
+        selectTab(0)
+    }
+
+    private fun selectTab(index: Int) {
+        currentTab = index.coerceIn(0, 4)
+        bottomTabViews.forEachIndexed { itemIndex, item ->
+            val selected = itemIndex == currentTab
+            val color = if (selected) IOS_RED else IOS_SECONDARY
+            (item.getChildAt(0) as? ImageView)?.setColorFilter(color)
+            (item.getChildAt(1) as? TextView)?.setTextColor(color)
+        }
+        when (currentTab) {
+            0 -> showControl()
+            1 -> showCodes()
+            2 -> showSavedDevices()
+            3 -> showLearn()
+            else -> showDiagnostics()
+        }
+    }
+
+    private fun addBottomTab(label: String, iconRes: Int, index: Int) {
+        val item = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(2), dp(3), dp(2), dp(1))
+        }
+        val icon = ImageView(this).apply {
+            setImageResource(iconRes)
+            setColorFilter(IOS_SECONDARY)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        val text = TextView(this).apply {
+            this.text = label
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(IOS_SECONDARY)
+            maxLines = 1
+        }
+        item.addView(icon, LinearLayout.LayoutParams(dp(25), dp(25)))
+        item.addView(text, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+        item.setOnClickListener { selectTab(index) }
+        bottomTabViews += item
+        bottomBar.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
     }
 
     private fun showControl() {
-        scanner.stop()
-        val body = installScrollableBody()
+        val screen = beginScreen()
+        val body = installScreenBody("IR Universal")
 
-        body.addView(sectionTitle("Barrido IR"))
+        body.addView(controlHero(), spacedMatch(4))
+        body.addView(accessoryStatusCard(), spacedMatch(16))
 
-        val category = enumSpinner(DeviceCategory.entries.map { it.title })
-        val region = enumSpinner(TvRegion.entries.map { it.title })
-        val pace = enumSpinner(ScanPace.entries.map { it.title })
-        val mode = enumSpinner(TransmitterMode.entries.map { it.title })
+        val quick = store.loadDevices().filter { it.category == selectedCategory }.take(3)
+        if (quick.isNotEmpty()) {
+            body.addView(sectionHeader("★  Acceso rápido"))
+            quick.forEach { device ->
+                val row = card(16).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(this@MainActivity).apply {
+                        text = categoryGlyph(device.category)
+                        textSize = 22f
+                        setTextColor(IOS_RED)
+                        gravity = Gravity.CENTER
+                    }, LinearLayout.LayoutParams(dp(34), dp(42)))
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(bodyText(device.name, 15f, Color.WHITE, Typeface.BOLD))
+                        addView(bodyText(device.code.displayName, 12f, IOS_SECONDARY))
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(TextView(this@MainActivity).apply {
+                        text = "⏻"
+                        textSize = 24f
+                        setTextColor(IOS_RED)
+                        gravity = Gravity.CENTER
+                    }, LinearLayout.LayoutParams(dp(46), dp(46)))
+                    setOnClickListener {
+                        sendAsync(device.code, screenStatusText("Transmitiendo…"), screen)
+                    }
+                }
+                body.addView(row, spacedMatch(10))
+            }
+        }
 
-        body.addView(label("Categoría"))
-        body.addView(category)
-        body.addView(label("Región TV"))
-        body.addView(region)
-        body.addView(label("Modo de transmisión"))
-        body.addView(mode)
-        body.addView(label("Velocidad"))
-        body.addView(pace)
+        store.loadWorked().firstOrNull()?.let { record ->
+            val recent = card(18).apply {
+                val header = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        bodyText("✓  Último código que funcionó", 15f, Color.WHITE, Typeface.BOLD),
+                        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    )
+                    addView(bodyText(
+                        java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT)
+                            .format(java.util.Date(record.createdAt)),
+                        11f,
+                        IOS_SECONDARY
+                    ))
+                }
+                addView(header, spacedMatch(8))
+                addView(bodyText(record.code.displayName, 14f, Color.WHITE, Typeface.BOLD), spacedMatch(4))
+                addView(bodyText(
+                    record.code.sourceLabel + " · " + record.code.effectiveCarrierHz + " Hz",
+                    12f,
+                    IOS_SECONDARY
+                ), spacedMatch(8))
+                val resend = tintedButton("⏻  PROBAR DE NUEVO", IOS_GREEN)
+                addView(resend, matchWrap())
+                resend.setOnClickListener { sendAsync(record.code, detailsStatus(this), screen) }
+            }
+            body.addView(recent, spacedMatch(16))
+        }
 
-        val status = infoText("Listo. " + transmitter.active().name)
+        val categoryControl = segmentedControl(
+            listOf("TV", "Aire", "Proyector"),
+            selectedCategory.ordinal
+        ) { index ->
+            selectedCategory = DeviceCategory.entries[index]
+            if (isScreenActive(screen)) showControl()
+        }
+        body.addView(categoryControl, spacedMatch(12))
+
+        var regionControl: LinearLayout? = null
+        if (selectedCategory == DeviceCategory.TELEVISION) {
+            regionControl = segmentedControl(
+                TvRegion.entries.map { it.title },
+                selectedRegion.ordinal
+            ) { index ->
+                selectedRegion = TvRegion.entries[index]
+                if (isScreenActive(screen)) showControl()
+            }
+            body.addView(regionControl, spacedMatch(16))
+        }
+
+        val scanCard = card(20)
+        val scanHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText("◉  Barrido universal", 16f, Color.WHITE, Typeface.BOLD),
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bodyText(
+                IrCodeCatalog.codes(selectedCategory, selectedRegion).size.toString() + " códigos",
+                12f,
+                IOS_SECONDARY
+            ))
+        }
+        scanCard.addView(scanHeader, spacedMatch(10))
+
+        val paceControl = segmentedControl(
+            ScanPace.entries.map { it.title },
+            selectedPace.ordinal
+        ) { index -> selectedPace = ScanPace.entries[index] }
+        scanCard.addView(paceControl, spacedMatch(8))
+        val paceHelp = infoText(paceHelp(selectedPace)).apply {
+            setPadding(0, 0, 0, dp(8))
+        }
+        scanCard.addView(paceHelp, matchWrap())
+        paceControl.setOnHierarchyChangeListener(null)
+
+        val start = primaryButton(categoryButtonTitle(selectedCategory))
+        scanCard.addView(start, matchWrap())
+        body.addView(scanCard, spacedMatch(14))
+
+        val activeCard = card(20).apply { visibility = View.GONE }
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progress = 0
+            progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
         }
-        body.addView(status)
-        body.addView(progress, matchWrap())
+        val countText = bodyText("0 / 0", 12f, IOS_SECONDARY)
+        val etaText = bodyText("", 12f, IOS_SECONDARY)
+        val codeLabel = bodyText("Código actual", 12f, IOS_SECONDARY)
+        val currentCode = bodyText("—", 14f, Color.WHITE, Typeface.BOLD)
+        val carrierText = bodyText("", 12f, IOS_SECONDARY)
+        val status = infoText("Listo. " + transmitter.active().name).apply {
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        activeCard.addView(progress, spacedMatch(8))
+        val progressMeta = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(countText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(etaText)
+        }
+        activeCard.addView(progressMeta, spacedMatch(8))
+        activeCard.addView(codeLabel)
+        activeCard.addView(currentCode)
+        activeCard.addView(carrierText, spacedMatch(8))
+        activeCard.addView(status, spacedMatch(8))
 
-        val start = actionButton("INICIAR BARRIDO")
-        val pause = secondaryButton("PAUSAR / REANUDAR")
-        val stop = secondaryButton("DETENER")
-        val worked = actionButton("FUNCIONÓ")
+        val transport = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val previous = outlineButton("◀|")
+        val pause = outlineButton("Ⅱ")
+        val next = outlineButton("|▶")
+        transport.addView(previous, weighted())
+        transport.addView(space(dp(8)))
+        transport.addView(pause, weighted())
+        transport.addView(space(dp(8)))
+        transport.addView(next, weighted())
+        activeCard.addView(transport, spacedMatch(10))
+        val worked = tintedButton("✓  FUNCIONÓ", IOS_GREEN)
+        activeCard.addView(worked, matchWrap())
+        body.addView(activeCard, spacedMatch(18))
 
-        body.addView(start)
-        body.addView(pause)
-        body.addView(stop)
-        body.addView(worked)
+        fun setScanConfigurationEnabled(enabled: Boolean) {
+            setSegmentEnabled(categoryControl, enabled)
+            regionControl?.let { setSegmentEnabled(it, enabled) }
+            setSegmentEnabled(paceControl, enabled)
+        }
 
         start.setOnClickListener {
-            val selectedCategory = DeviceCategory.entries[category.selectedItemPosition]
-            val selectedRegion = TvRegion.entries[region.selectedItemPosition]
-            val selectedPace = ScanPace.entries[pace.selectedItemPosition]
-            transmitter.mode = TransmitterMode.entries[mode.selectedItemPosition]
+            if (scanner.isRunning()) {
+                scanner.stop()
+                activeCard.visibility = View.GONE
+                start.text = categoryButtonTitle(selectedCategory)
+                setScanConfigurationEnabled(true)
+                return@setOnClickListener
+            }
 
             val codes = IrCodeCatalog.codes(selectedCategory, selectedRegion)
             if (codes.isEmpty()) {
                 status.text = "No hay una base offline para esta categoría todavía. Usa Online o importa un mando .ir."
+                activeCard.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
             val active = transmitter.active()
             if (!active.isAvailable()) {
                 status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                activeCard.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
             status.text = "Iniciando " + codes.size + " códigos mediante " + active.name
             progress.progress = 0
+            etaText.text = ""
+            activeCard.visibility = View.VISIBLE
+            start.text = "DETENER BARRIDO"
+            setScanConfigurationEnabled(false)
             scanner.start(codes, selectedPace) { p ->
                 runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
                     progress.progress = if (p.total == 0) 0 else (p.index * 1000 / p.total)
+                    countText.text = p.index.toString() + " / " + p.total
+                    val remainingMillis = (p.total - p.index).coerceAtLeast(0) *
+                        (selectedPace.gapMillis + 120L)
+                    val remainingSeconds = (remainingMillis / 1000L).toInt()
+                    etaText.text = if (p.code == null || remainingSeconds <= 0) "" else if (remainingSeconds < 60) {
+                        "~" + remainingSeconds + " s"
+                    } else {
+                        "~" + (remainingSeconds / 60) + " min " + (remainingSeconds % 60) + " s"
+                    }
+                    currentCode.text = p.code?.displayName ?: "Barrido terminado"
+                    carrierText.text = p.code?.let { it.effectiveCarrierHz.toString() + " Hz" }.orEmpty()
                     status.text = when {
-                        p.code == null -> "Barrido terminado."
+                        p.code == null -> {
+                            activeCard.visibility = View.GONE
+                            start.text = categoryButtonTitle(selectedCategory)
+                            setScanConfigurationEnabled(true)
+                            "Barrido terminado."
+                        }
                         p.error != null -> "Código " + p.index + "/" + p.total + " · " + p.error
                         else -> "Código " + p.index + "/" + p.total + " · " +
                             p.code.displayName + " · " + p.code.effectiveCarrierHz + " Hz"
@@ -177,17 +387,16 @@ class MainActivity : Activity() {
             if (!scanner.isRunning()) return@setOnClickListener
             if (scanner.isPaused()) {
                 scanner.resume()
+                pause.text = "Ⅱ"
                 status.text = "Barrido reanudado."
             } else {
                 scanner.pause()
+                pause.text = "▶"
                 status.text = "Barrido pausado."
             }
         }
-
-        stop.setOnClickListener {
-            scanner.stop()
-            status.text = "Barrido detenido."
-        }
+        previous.setOnClickListener { scanner.step(-1) }
+        next.setOnClickListener { scanner.step(1) }
 
         worked.setOnClickListener {
             val candidates = scanner.candidates()
@@ -196,8 +405,9 @@ class MainActivity : Activity() {
             } else {
                 scanner.pause()
                 showCodeChooser("¿Qué código funcionó?", candidates) { code ->
+                    store.addWorked(selectedCategory, code)
                     saveDeviceDialog(
-                        DeviceCategory.entries[category.selectedItemPosition],
+                        selectedCategory,
                         code
                     )
                 }
@@ -206,156 +416,510 @@ class MainActivity : Activity() {
     }
 
     private fun showCodes() {
-        scanner.stop()
+        val screen = beginScreen()
+        val body = installScreenBody("Seleccionar código")
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
-            setBackgroundColor(Color.BLACK)
+        body.addView(segmentedControl(
+            listOf("TV", "Aire", "Proyector"),
+            selectedCategory.ordinal
+        ) { index ->
+            selectedCategory = DeviceCategory.entries[index]
+            if (isScreenActive(screen)) showCodes()
+        }, spacedMatch(12))
+
+        if (selectedCategory == DeviceCategory.TELEVISION) {
+            body.addView(segmentedControl(
+                TvRegion.entries.map { it.title },
+                selectedRegion.ordinal
+            ) { index ->
+                selectedRegion = TvRegion.entries[index]
+                if (isScreenActive(screen)) showCodes()
+            }, spacedMatch(14))
         }
-        contentHost.replace(root)
 
-        root.addView(sectionTitle("Códigos offline"))
-
-        val controls = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val category = enumSpinner(DeviceCategory.entries.map { it.title })
-        val region = enumSpinner(TvRegion.entries.map { it.title })
-        val source = enumSpinner(listOf("Todos", "Universal", "TV-B-Gone"))
-        val search = EditText(this).apply {
-            hint = "Buscar por marca, nombre o ID"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            setSingleLine(true)
-        }
-        val selectedInfo = infoText("Toca un código para seleccionarlo.")
-        var selected: IrCode? = null
-        var current: List<IrCode> = emptyList()
-
-        controls.addView(category)
-        controls.addView(region)
-        controls.addView(source)
-        controls.addView(search)
-        controls.addView(selectedInfo)
-
-        val buttons = LinearLayout(this).apply {
+        val onlineCard = card(18).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText("◎", 30f, IOS_RED), LinearLayout.LayoutParams(dp(42), dp(48)))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(bodyText("Biblioteca IR online", 16f, Color.WHITE, Typeface.BOLD))
+                addView(bodyText(
+                    "Busca por marca/modelo, prueba códigos y descarga mandos",
+                    12f,
+                    IOS_SECONDARY
+                ))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bodyText("›", 28f, IOS_SECONDARY))
+            setOnClickListener { showOnline() }
         }
-        val send = actionButton("PROBAR")
-        val save = secondaryButton("GUARDAR")
-        val importFile = secondaryButton("IMPORTAR .IR")
-        buttons.addView(send, weighted())
-        buttons.addView(save, weighted())
-        controls.addView(buttons)
-        controls.addView(importFile)
+        body.addView(onlineCard, spacedMatch(14))
 
-        root.addView(controls, matchWrap())
-
-        val list = ListView(this).apply {
-            dividerHeight = 1
+        val search = EditText(this).apply {
+            hint = "Buscar marca, modelo o código"
+            setTextColor(Color.WHITE)
+            setHintTextColor(IOS_SECONDARY)
+            textSize = 15f
+            setSingleLine(true)
+            background = roundedDrawable(IOS_SURFACE, 12, IOS_BORDER)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
         }
-        root.addView(list, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        body.addView(search, spacedMatch(12))
 
-        fun refresh() {
-            val cat = DeviceCategory.entries[category.selectedItemPosition]
-            val reg = TvRegion.entries[region.selectedItemPosition]
+        var sourceIndex = 0
+        val sourceLabels = listOf("Todos", "Universal", "TV-B-Gone", "IRDB")
+        val sourceControl = segmentedControl(sourceLabels, sourceIndex) { index ->
+            sourceIndex = index
+        }
+        body.addView(sourceControl, spacedMatch(14))
+
+        val browserCard = card(20)
+        val browserHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        browserHeader.addView(
+            bodyText("ABC  Explorar marcas", 16f, Color.WHITE, Typeface.BOLD),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        val countLabel = bodyText("0", 12f, IOS_SECONDARY)
+        browserHeader.addView(countLabel)
+        browserCard.addView(browserHeader, spacedMatch(10))
+
+        val modeRaw = preferences.getString(PREF_BROWSER_MODE, "list") ?: "list"
+        var listMode = modeRaw != "wheel"
+        val modeControl = segmentedControl(
+            listOf("Lista", "Ruleta"),
+            if (listMode) 0 else 1
+        ) { index ->
+            preferences.edit().putString(PREF_BROWSER_MODE, if (index == 0) "list" else "wheel").apply()
+            if (isScreenActive(screen)) showCodes()
+        }
+        browserCard.addView(modeControl, spacedMatch(8))
+        val help = infoText(
+            if (listMode) "Toca una marca para ver sus códigos dentro de esta misma lista."
+            else "Selecciona una marca con la ruleta."
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        browserCard.addView(help)
+
+        val browserContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        browserCard.addView(browserContainer, matchWrap())
+        body.addView(browserCard, spacedMatch(14))
+
+        val selectionHost = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        body.addView(selectionHost, spacedMatch(18))
+
+        var selectedCode: IrCode? = null
+        var selectedBrand = ""
+        var selectedLetter = ""
+
+        fun sourceMatches(code: IrCode): Boolean = when (sourceIndex) {
+            1 -> code.sourceLabel == "Universal"
+            2 -> code.sourceLabel == "TV-B-Gone"
+            3 -> code.sourceLabel == "Flipper-IRDB"
+            else -> true
+        }
+
+        fun allFilteredCodes(): List<IrCode> {
             val q = search.text.toString().trim().lowercase()
-            val filter = source.selectedItemPosition
+            return IrCodeCatalog.codes(selectedCategory, selectedRegion).filter { code ->
+                sourceMatches(code) && (
+                    q.isBlank() ||
+                        code.id.lowercase().contains(q) ||
+                        code.displayName.lowercase().contains(q) ||
+                        code.brandHint.lowercase().contains(q)
+                    )
+            }
+        }
 
-            current = IrCodeCatalog.codes(cat, reg).filter { code ->
-                val sourceOk = when (filter) {
-                    1 -> code.sourceLabel == "Universal"
-                    2 -> code.sourceLabel == "TV-B-Gone"
-                    else -> true
+        fun brandName(code: IrCode): String {
+            val hint = code.brandHint.trim()
+            if (hint.isNotBlank() && !hint.equals(code.sourceLabel, ignoreCase = true)) return hint
+            return code.displayName.removePrefix("TV-B-Gone · ").trim().ifBlank { code.id }
+        }
+
+        fun showSelection(code: IrCode?) {
+            selectedCode = code
+            selectionHost.removeAllViews()
+            val value = code ?: return
+            val details = card(18).apply {
+                addView(bodyText(value.displayName, 17f, Color.WHITE, Typeface.BOLD))
+                addView(bodyText(value.id, 12f, IOS_SECONDARY))
+                addView(bodyText(
+                    value.sourceLabel + " · " + value.effectiveCarrierHz + " Hz · " +
+                        value.durationMillis + " ms",
+                    13f,
+                    IOS_SECONDARY
+                ))
+            }
+            selectionHost.addView(details, spacedMatch(10))
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val send = primaryButton("⌁  PROBAR")
+            val save = outlineButton("☆  GUARDAR")
+            actions.addView(send, weighted())
+            actions.addView(space(dp(10)))
+            actions.addView(save, weighted())
+            selectionHost.addView(actions, matchWrap())
+            send.setOnClickListener { sendAsync(value, detailsStatus(details), screen) }
+            save.setOnClickListener { saveDeviceDialog(selectedCategory, value) }
+        }
+
+        fun renderBrowser() {
+            browserContainer.removeAllViews()
+            selectionHost.removeAllViews()
+            selectedCode = null
+
+            val codes = allFilteredCodes()
+            val brands = codes.map(::brandName)
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase() }
+                .sortedBy { it.lowercase() }
+            countLabel.text = brands.size.toString()
+
+            if (brands.isEmpty()) {
+                browserContainer.addView(emptyState(
+                    "Sin códigos",
+                    "Prueba con otra búsqueda u otro origen."
+                ))
+                return
+            }
+
+            if (!listMode) {
+                val brandWheel = NumberPicker(this).apply {
+                    minValue = 0
+                    maxValue = brands.size
+                    displayedValues = arrayOf("Todas") + brands.toTypedArray()
+                    wrapSelectorWheel = false
+                    value = if (selectedBrand.isBlank()) 0 else
+                        (brands.indexOfFirst { it.equals(selectedBrand, true) } + 1).coerceAtLeast(0)
+                    setOnValueChangedListener { _, _, newValue ->
+                        selectedBrand = if (newValue == 0) "" else brands[newValue - 1]
+                        renderBrowser()
+                    }
                 }
-                val textOk = q.isBlank() ||
-                    code.id.lowercase().contains(q) ||
-                    code.displayName.lowercase().contains(q) ||
-                    code.brandHint.lowercase().contains(q)
-                sourceOk && textOk
+                browserContainer.addView(brandWheel, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(150)
+                ))
+                val options = if (selectedBrand.isBlank()) codes else
+                    codes.filter { brandName(it).equals(selectedBrand, true) }
+                if (options.isNotEmpty()) {
+                    val codeWheel = NumberPicker(this).apply {
+                        minValue = 0
+                        maxValue = options.lastIndex
+                        displayedValues = options.map { it.displayName.take(42) }.toTypedArray()
+                        wrapSelectorWheel = false
+                        setOnValueChangedListener { _, _, newValue -> showSelection(options[newValue]) }
+                    }
+                    browserContainer.addView(sectionHeader("Ruleta de códigos"))
+                    browserContainer.addView(codeWheel, LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, dp(180)
+                    ))
+                    showSelection(options.first())
+                }
+                return
             }
 
-            list.adapter = darkArrayAdapter(
-                current.map { it.displayName + "  ·  " + it.effectiveCarrierHz + " Hz" }
-            )
-        }
+            val availableLetters = brands.mapNotNull {
+                it.trim().firstOrNull()?.uppercaseChar()?.takeIf { c -> c in 'A'..'Z' }?.toString()
+            }.distinct().sorted()
+            if (selectedLetter !in availableLetters) selectedLetter = availableLetters.firstOrNull().orEmpty()
 
-        category.onItemSelectedListener = simpleSelection { refresh() }
-        region.onItemSelectedListener = simpleSelection { refresh() }
-        source.onItemSelectedListener = simpleSelection { refresh() }
-        search.addTextChangedListener(simpleTextWatcher { refresh() })
-
-        list.setOnItemClickListener { _, _, position, _ ->
-            selected = current.getOrNull(position)
-            selected?.let {
-                selectedInfo.text = it.displayName + "\n" + it.id + "\n" +
-                    it.sourceLabel + " · " + it.effectiveCarrierHz + " Hz · " +
-                    it.durationMillis + " ms"
+            val columns = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.TOP
             }
+            val lettersScroll = ScrollView(this)
+            val letters = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            availableLetters.forEach { letter ->
+                val button = TextView(this).apply {
+                    text = letter
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setTextColor(if (letter == selectedLetter) Color.WHITE else IOS_RED)
+                    background = if (letter == selectedLetter)
+                        roundedDrawable(IOS_RED, 8) else roundedDrawable(Color.TRANSPARENT, 8)
+                    setOnClickListener {
+                        selectedLetter = letter
+                        selectedBrand = ""
+                        renderBrowser()
+                    }
+                }
+                letters.addView(button, LinearLayout.LayoutParams(dp(36), dp(32)))
+            }
+            lettersScroll.addView(letters)
+            columns.addView(lettersScroll, LinearLayout.LayoutParams(dp(44), dp(286)))
+
+            val listScroll = ScrollView(this)
+            val rows = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(10), 0, 0, 0)
+            }
+
+            if (selectedBrand.isBlank()) {
+                brands.filter {
+                    it.trim().firstOrNull()?.uppercaseChar()?.toString() == selectedLetter
+                }.forEach { brand ->
+                    rows.addView(browserRow(brand, "›") {
+                        selectedBrand = brand
+                        renderBrowser()
+                    })
+                }
+            } else {
+                rows.addView(browserRow("‹  Marcas", "") {
+                    selectedBrand = ""
+                    renderBrowser()
+                })
+                codes.filter { brandName(it).equals(selectedBrand, true) }.forEach { code ->
+                    rows.addView(browserRow(code.displayName, code.effectiveCarrierHz.toString() + " Hz") {
+                        showSelection(code)
+                    })
+                }
+            }
+            listScroll.addView(rows)
+            columns.addView(listScroll, LinearLayout.LayoutParams(
+                0, dp(286), 1f
+            ))
+            browserContainer.addView(columns, matchWrap())
         }
 
-        send.setOnClickListener {
-            val code = selected ?: return@setOnClickListener toast("Selecciona un código.")
-            sendAsync(code, selectedInfo)
+        sourceControl.setOnClickListener(null)
+        search.addTextChangedListener(simpleTextWatcher {
+            selectedBrand = ""
+            renderBrowser()
+        })
+        wireSegmentCallback(sourceControl) { index ->
+            sourceIndex = index
+            selectedBrand = ""
+            renderBrowser()
         }
-        save.setOnClickListener {
-            val code = selected ?: return@setOnClickListener toast("Selecciona un código.")
-            saveDeviceDialog(DeviceCategory.entries[category.selectedItemPosition], code)
-        }
-        importFile.setOnClickListener { openIrFilePicker() }
 
-        refresh()
+        renderBrowser()
     }
 
     private fun showOnline() {
-        scanner.stop()
+        val screen = beginScreen()
+        val body = installScreenBody("IR online") { showCodes() }
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
-            setBackgroundColor(Color.BLACK)
-        }
-        contentHost.replace(root)
+        var sourceIndex = 0
+        val searchCard = card(20)
+        searchCard.addView(bodyText("◎  Biblioteca IR online", 20f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        searchCard.addView(bodyText(
+            "Busca mandos publicados por la comunidad, pruébalos y guarda los que funcionen para usarlos después sin Internet.",
+            14f,
+            IOS_SECONDARY
+        ), spacedMatch(12))
 
-        root.addView(sectionTitle("Biblioteca IR online"))
+        searchCard.addView(segmentedControl(
+            listOf("TV", "Aire", "Proyector"),
+            selectedCategory.ordinal
+        ) { index ->
+            selectedCategory = DeviceCategory.entries[index]
+            if (isScreenActive(screen)) showOnline()
+        }, spacedMatch(10))
 
-        val category = enumSpinner(DeviceCategory.entries.map { it.title })
-        val brand = EditText(this).apply {
-            hint = "Marca (ej. Samsung)"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            setSingleLine(true)
+        val brand = oledInput("Marca (ej. TD Systems)")
+        val model = oledInput("Modelo (opcional)")
+        searchCard.addView(brand, spacedMatch(10))
+        searchCard.addView(model, spacedMatch(10))
+
+        var reloadBrands: (() -> Unit)? = null
+        val sourceControl = segmentedControl(
+            listOf("Todas", "Flipper", "Oficial", "IRDB"),
+            sourceIndex
+        ) { index ->
+            sourceIndex = index
+            reloadBrands?.invoke()
         }
-        val model = EditText(this).apply {
-            hint = "Modelo (opcional)"
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.GRAY)
-            setSingleLine(true)
-        }
+        searchCard.addView(sourceControl, spacedMatch(8))
+
         val deep = CheckBox(this).apply {
             text = "Búsqueda profunda"
-            setTextColor(Color.LTGRAY)
+            setTextColor(Color.WHITE)
+            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
         }
-        val searchButton = actionButton("BUSCAR")
-        val status = infoText("Busca por marca y, si lo conoces, por modelo.")
-        val list = ListView(this)
-        var results: List<OnlineIrRemote> = emptyList()
+        searchCard.addView(deep, spacedMatch(8))
+        val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
+        searchCard.addView(searchButton, matchWrap())
+        body.addView(searchCard, spacedMatch(14))
 
-        root.addView(category)
-        root.addView(brand)
-        root.addView(model)
-        root.addView(deep)
-        root.addView(searchButton)
-        root.addView(status)
-        root.addView(list, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        val brandCard = card(18)
+        val brandHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText("ABC  Explorar marcas", 16f, Color.WHITE, Typeface.BOLD),
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val brandStatus = bodyText("Cargando…", 12f, IOS_SECONDARY)
+        brandHeader.addView(brandStatus)
+        brandCard.addView(brandHeader, spacedMatch(10))
+        val onlineMode = preferences.getString(PREF_ONLINE_BROWSER_MODE, "list") ?: "list"
+        var onlineListMode = onlineMode != "wheel"
+        brandCard.addView(segmentedControl(
+            listOf("Lista", "Ruleta"),
+            if (onlineListMode) 0 else 1
+        ) { index ->
+            preferences.edit().putString(PREF_ONLINE_BROWSER_MODE, if (index == 0) "list" else "wheel").apply()
+            if (isScreenActive(screen)) showOnline()
+        }, spacedMatch(8))
+        brandCard.addView(infoText(
+            if (onlineListMode) "Solo aparecen las letras que tienen marcas."
+            else "Selecciona una marca usando la ruleta."
+        ).apply { setPadding(0, 0, 0, dp(8)) })
+        val brandBrowser = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brandCard.addView(brandBrowser)
+        body.addView(brandCard, spacedMatch(14))
+
+        val importCard = card(18)
+        importCard.addView(bodyText("↗  Importar por URL", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        val importUrl = oledInput("https://… archivo .ir o CSV IRDB")
+        val importStatus = infoText("").apply { setPadding(0, 0, 0, 0) }
+        val importButton = outlineButton("IMPORTAR")
+        importCard.addView(importUrl, spacedMatch(8))
+        importCard.addView(importButton, spacedMatch(8))
+        importCard.addView(importStatus)
+        body.addView(importCard, spacedMatch(14))
+
+        val resultsCard = card(18)
+        val resultsTitle = bodyText("Resultados", 16f, Color.WHITE, Typeface.BOLD)
+        val status = infoText("Busca por marca y, si lo conoces, por modelo.").apply {
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        val resultsHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        resultsCard.addView(resultsTitle)
+        resultsCard.addView(status)
+        resultsCard.addView(resultsHost)
+        body.addView(resultsCard, spacedMatch(18))
+
+        fun selectedSources(): List<com.gokuencinar.iruniversal.online.OnlineIrSource> = when (sourceIndex) {
+            1 -> listOf(com.gokuencinar.iruniversal.online.OnlineIrSource.FLIPPER_COMMUNITY)
+            2 -> listOf(com.gokuencinar.iruniversal.online.OnlineIrSource.FLIPPER_OFFICIAL)
+            3 -> listOf(com.gokuencinar.iruniversal.online.OnlineIrSource.LEGACY_IRDB)
+            else -> com.gokuencinar.iruniversal.online.OnlineIrSource.entries
+        }
+
+        fun renderResults(results: List<OnlineIrRemote>) {
+            resultsHost.removeAllViews()
+            if (results.isEmpty()) {
+                resultsHost.addView(emptyState("Sin resultados", "Prueba otra marca, modelo o fuente."))
+                return
+            }
+            results.forEach { remote ->
+                resultsHost.addView(browserRow(
+                    remote.displayName,
+                    remote.source.title + "  ›"
+                ) {
+                    status.text = "Descargando " + remote.displayName + "…"
+                    worker.execute {
+                        val loaded = runCatching { onlineLibrary.download(remote) }
+                        runOnUiThread {
+                            if (!isScreenActive(screen)) return@runOnUiThread
+                            loaded.onSuccess { value ->
+                                status.text = value.name + " · " + value.signals.size + " señales"
+                                showImportedSignals(value.signals, selectedCategory)
+                            }.onFailure {
+                                status.text = "Error: " + (it.message ?: "desconocido")
+                            }
+                        }
+                    }
+                })
+            }
+        }
+
+        fun renderBrands(values: List<String>) {
+            brandBrowser.removeAllViews()
+            brandStatus.text = values.size.toString() + " marcas"
+            if (values.isEmpty()) {
+                brandBrowser.addView(emptyState("Sin marcas", "No se pudo cargar el índice para esta fuente."))
+                return
+            }
+            if (!onlineListMode) {
+                val pickerValues = arrayOf("Sin seleccionar") + values.toTypedArray()
+                val wheel = NumberPicker(this).apply {
+                    minValue = 0
+                    maxValue = pickerValues.lastIndex
+                    displayedValues = pickerValues
+                    wrapSelectorWheel = false
+                    setOnValueChangedListener { _, _, newValue ->
+                        if (newValue > 0) brand.setText(values[newValue - 1]) else brand.setText("")
+                    }
+                }
+                brandBrowser.addView(wheel, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(150)
+                ))
+                return
+            }
+
+            val letters = values.mapNotNull {
+                it.trim().firstOrNull()?.uppercaseChar()?.takeIf { c -> c in 'A'..'Z' }?.toString()
+            }.distinct().sorted()
+            var selectedLetter = letters.firstOrNull().orEmpty()
+            val columns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val letterHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val listHost = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(10), 0, 0, 0)
+            }
+
+            fun fillList() {
+                listHost.removeAllViews()
+                values.filter {
+                    it.trim().firstOrNull()?.uppercaseChar()?.toString() == selectedLetter
+                }.forEach { value ->
+                    listHost.addView(browserRow(value, "›") {
+                        brand.setText(value)
+                    })
+                }
+                for (i in 0 until letterHost.childCount) {
+                    val v = letterHost.getChildAt(i) as TextView
+                    val active = v.text.toString() == selectedLetter
+                    v.setTextColor(if (active) Color.WHITE else IOS_RED)
+                    v.background = if (active) roundedDrawable(IOS_RED, 8)
+                    else roundedDrawable(Color.TRANSPARENT, 8)
+                }
+            }
+
+            letters.forEach { letter ->
+                letterHost.addView(TextView(this).apply {
+                    text = letter
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setOnClickListener {
+                        selectedLetter = letter
+                        fillList()
+                    }
+                }, LinearLayout.LayoutParams(dp(36), dp(32)))
+            }
+            val ls = ScrollView(this).apply { addView(letterHost) }
+            val rs = ScrollView(this).apply { addView(listHost) }
+            columns.addView(ls, LinearLayout.LayoutParams(dp(44), dp(286)))
+            columns.addView(rs, LinearLayout.LayoutParams(0, dp(286), 1f))
+            brandBrowser.addView(columns)
+            fillList()
+        }
+
+        reloadBrands = {
+            brandStatus.text = "Actualizando marcas…"
+            brandBrowser.removeAllViews()
+            val categorySnapshot = selectedCategory
+            val sourcesSnapshot = selectedSources().toList()
+            worker.execute {
+                val loaded = runCatching { onlineLibrary.brands(categorySnapshot, sourcesSnapshot) }
+                runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    loaded.onSuccess(::renderBrands).onFailure {
+                        brandStatus.text = "No se pudo cargar"
+                        brandBrowser.removeAllViews()
+                        brandBrowser.addView(emptyState("Error de red", it.message ?: "No se pudo cargar el índice."))
+                    }
+                }
+            }
+        }
 
         searchButton.setOnClickListener {
             val b = brand.text.toString()
@@ -364,23 +928,27 @@ class MainActivity : Activity() {
                 status.text = "Escribe al menos una marca o un modelo."
                 return@setOnClickListener
             }
+            val categorySnapshot = selectedCategory
+            val deepSearch = deep.isChecked
+            val sourcesSnapshot = selectedSources().toList()
             status.text = "Consultando bibliotecas IR…"
             searchButton.isEnabled = false
+            searchButton.text = "BUSCANDO…"
             worker.execute {
                 val found = runCatching {
                     onlineLibrary.search(
                         b, m,
-                        DeviceCategory.entries[category.selectedItemPosition],
-                        deep = deep.isChecked
+                        categorySnapshot,
+                        sources = sourcesSnapshot,
+                        deep = deepSearch
                     )
                 }
                 runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
                     searchButton.isEnabled = true
+                    searchButton.text = "⌕  BUSCAR CÓDIGOS"
                     found.onSuccess {
-                        results = it
-                        list.adapter = darkArrayAdapter(
-                            it.map { remote -> remote.displayName + " · " + remote.source.title }
-                        )
+                        renderResults(it)
                         status.text = if (it.isEmpty()) "Sin resultados." else "Encontrados " + it.size + " mandos."
                     }.onFailure {
                         status.text = "Error: " + (it.message ?: "desconocido")
@@ -389,180 +957,534 @@ class MainActivity : Activity() {
             }
         }
 
-        list.setOnItemClickListener { _, _, position, _ ->
-            val remote = results.getOrNull(position) ?: return@setOnItemClickListener
-            status.text = "Descargando " + remote.displayName + "…"
+        importButton.setOnClickListener {
+            val url = importUrl.text.toString().trim()
+            if (url.isBlank()) return@setOnClickListener
+            importButton.isEnabled = false
+            importStatus.text = "Importando…"
             worker.execute {
-                val loaded = runCatching { onlineLibrary.download(remote) }
+                val loaded = runCatching { onlineLibrary.importUrl(url) }
                 runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    importButton.isEnabled = true
                     loaded.onSuccess { value ->
-                        status.text = value.name + " · " + value.signals.size + " señales"
-                        showImportedSignals(value.signals, DeviceCategory.entries[category.selectedItemPosition])
+                        importStatus.text = value.name + " · " + value.signals.size + " señales"
+                        showImportedSignals(value.signals, selectedCategory)
                     }.onFailure {
-                        status.text = "Error: " + (it.message ?: "desconocido")
+                        importStatus.text = "Error: " + (it.message ?: "desconocido")
                     }
                 }
             }
         }
+
+        reloadBrands.invoke()
     }
 
     private fun showLearn() {
-        scanner.stop()
-        val body = installScrollableBody()
+        val screen = beginScreen()
+        val body = installScreenBody("Aprender IR")
 
-        body.addView(sectionTitle("Aprender IR por entrada de audio"))
-        body.addView(infoText(
-            "Necesitas un receptor IR demodulado conectado a una entrada de audio. " +
-                "El adaptador de LEDs usado para emitir no puede aprender por sí solo."
+        val intro = card(18).apply {
+            addView(bodyText("≋  IR Studio", 17f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+            addView(bodyText(
+                "Aprende botones de un mando mediante un receptor IR conectado a una entrada de audio, analiza el protocolo, compáralo con la base y crea tus propios mandos.",
+                14f,
+                Color.LTGRAY
+            ), spacedMatch(6))
+            addView(bodyText(
+                "El LED emisor no puede recibir. Para aprender hace falta un receptor IR demodulado y una entrada de audio compatible.",
+                12f,
+                IOS_SECONDARY
+            ))
+        }
+        body.addView(intro, spacedMatch(14))
+
+        body.addView(segmentedControl(
+            listOf("TV", "Aire", "Proyector"),
+            selectedCategory.ordinal
+        ) { index ->
+            selectedCategory = DeviceCategory.entries[index]
+            if (isScreenActive(screen)) showLearn()
+        }, spacedMatch(14))
+
+        val learnedNow = store.loadLearned()
+        val studioTools = card(18)
+        val toolRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val importButton = outlineButton("⇩  Importar .ir")
+        val remoteButton = outlineButton("▤  Crear mando").apply {
+            isEnabled = learnedNow.isNotEmpty()
+            alpha = if (isEnabled) 1f else 0.45f
+        }
+        toolRow.addView(importButton, weighted())
+        toolRow.addView(space(dp(10)))
+        toolRow.addView(remoteButton, weighted())
+        studioTools.addView(toolRow, spacedMatch(8))
+        val guided = CheckBox(this).apply {
+            text = "Aprendizaje guiado"
+            setTextColor(Color.WHITE)
+            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+        }
+        studioTools.addView(guided)
+        body.addView(studioTools, spacedMatch(14))
+        importButton.setOnClickListener { openIrFilePicker() }
+        remoteButton.setOnClickListener {
+            toast("Selecciona señales aprendidas desde Mis equipos para crear accesos rápidos.")
+        }
+
+        val inputInfo = learner.inspectInput()
+        val inputCard = card(18)
+        val inputHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText("●  Entrada de audio", 16f, Color.WHITE, Typeface.BOLD),
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bodyText(if (inputInfo.isExternal) "✓" else "✕", 22f,
+                if (inputInfo.isExternal) IOS_GREEN else IOS_RED))
+        }
+        inputCard.addView(inputHeader, spacedMatch(6))
+        inputCard.addView(bodyText(inputInfo.description, 14f, Color.LTGRAY), spacedMatch(4))
+        inputCard.addView(bodyText(
+            if (inputInfo.isExternal) "Entrada externa detectada"
+            else "Entrada interna: este dispositivo no puede aprender IR",
+            12f,
+            if (inputInfo.isExternal) IOS_GREEN else IOS_RED,
+            Typeface.BOLD
+        ), spacedMatch(8))
+        val checkInput = outlineButton("⌁  Comprobar entrada")
+        inputCard.addView(checkInput, matchWrap())
+        body.addView(inputCard, spacedMatch(14))
+        checkInput.setOnClickListener {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+                return@setOnClickListener
+            }
+            if (isScreenActive(screen)) showLearn()
+        }
+
+        val carrierCard = card(18)
+        carrierCard.addView(bodyText("Portadora del mando", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        carrierCard.addView(segmentedControl(
+            listOf("Auto", "36", "38", "40", "56"),
+            selectedLearnCarrierIndex
+        ) { selectedLearnCarrierIndex = it }, spacedMatch(8))
+        carrierCard.addView(bodyText(
+            if (selectedLearnCarrierIndex == 0)
+                "Auto analiza la trama capturada, intenta reconocer el protocolo y elige su portadora habitual."
+            else
+                "Selección manual: " + intArrayOf(0, 36, 38, 40, 56)[selectedLearnCarrierIndex] + " kHz.",
+            12f,
+            IOS_SECONDARY
         ))
+        body.addView(carrierCard, spacedMatch(14))
 
-        val carrier = enumSpinner(listOf("38 kHz", "36 kHz", "40 kHz", "56 kHz"))
-        val status = infoText("Pulsa Capturar y después un botón del mando.")
-        val capture = actionButton("CAPTURAR")
-        val test = secondaryButton("PROBAR CAPTURA")
-        val save = secondaryButton("GUARDAR CAPTURA")
+        val captureCard = card(18)
+        captureCard.addView(bodyText("Captura", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        val status = infoText(
+            if (inputInfo.isExternal) "Pulsa Capturar y después un botón del mando."
+            else "Conecta un receptor IR a una entrada de audio externa."
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        captureCard.addView(status)
+        val captureRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val validate = outlineButton("✓  Validar x3")
+        val capture = primaryButton("●  CAPTURAR")
+        captureRow.addView(validate, weighted())
+        captureRow.addView(space(dp(10)))
+        captureRow.addView(capture, weighted())
+        captureCard.addView(captureRow)
+        body.addView(captureCard, spacedMatch(14))
 
-        body.addView(carrier)
-        body.addView(status)
-        body.addView(capture)
-        body.addView(test)
-        body.addView(save)
+        val resultHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(resultHost, spacedMatch(14))
 
-        capture.setOnClickListener {
+        fun renderLearnedResult(code: IrCode, message: String) {
+            resultHost.removeAllViews()
+            learnedCandidate = code
+            val analysis = IrSignalAnalyzer.analyze(code)
+            val resultCard = card(18)
+            resultCard.addView(bodyText("✓  Señal detectada", 16f, IOS_GREEN, Typeface.BOLD), spacedMatch(8))
+            resultCard.addView(bodyText(message, 13f, Color.LTGRAY), spacedMatch(6))
+            resultCard.addView(bodyText(
+                "Portadora  " + code.effectiveCarrierHz / 1000 + " kHz  ·  " +
+                    code.durationsMicros.size + " tiempos  ·  " + code.durationMillis + " ms",
+                12f,
+                IOS_SECONDARY
+            ), spacedMatch(6))
+            resultCard.addView(bodyText(
+                "Protocolo probable: " + analysis.protocolHint + " (" + analysis.confidence + "%)",
+                13f,
+                IOS_SECONDARY
+            ), spacedMatch(10))
+            val signalName = oledInput("Nombre del botón").apply { setText("Power") }
+            resultCard.addView(signalName, spacedMatch(10))
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val test = primaryButton("⌁  PROBAR")
+            val save = outlineButton("⇩  GUARDAR")
+            actions.addView(test, weighted())
+            actions.addView(space(dp(10)))
+            actions.addView(save, weighted())
+            resultCard.addView(actions)
+            resultHost.addView(resultCard)
+
+            test.setOnClickListener { sendAsync(code, status, screen) }
+            save.setOnClickListener {
+                val name = signalName.text.toString().trim().ifBlank { "Power" }
+                val storedCode = code.copy(id = "learned:" + name.replace(":", "_") + ":" + java.util.UUID.randomUUID())
+                val learned = store.loadLearned()
+                learned += storedCode
+                store.saveLearned(learned)
+                learnedCandidate = storedCode
+                toast("Guardado: " + name)
+                if (isScreenActive(screen)) showLearn()
+            }
+        }
+
+        fun doCapture(validated: Boolean) {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
                 status.text = "Concede permiso de micrófono y vuelve a pulsar Capturar."
-                return@setOnClickListener
+                return
+            }
+            val currentInput = learner.inspectInput()
+            if (!currentInput.isExternal) {
+                status.text = "No se detecta una entrada externa compatible."
+                return
             }
 
-            val hz = intArrayOf(38_000, 36_000, 40_000, 56_000)[carrier.selectedItemPosition]
-            status.text = "Capturando durante ~1,3 s…"
+            val selectedHz = intArrayOf(0, 36_000, 38_000, 40_000, 56_000)[selectedLearnCarrierIndex]
+            val captures = if (validated) 3 else 1
+            status.text = if (validated) "Capturando 3 muestras…" else "Capturando durante ~1,3 s…"
             capture.isEnabled = false
+            validate.isEnabled = false
             worker.execute {
-                val result = runCatching { learner.capture(hz) }
+                val result = runCatching {
+                    val successful = mutableListOf<IrCode>()
+                    repeat(captures) {
+                        learner.capture(if (selectedHz == 0) 38_000 else selectedHz).code?.let(successful::add)
+                    }
+                    require(successful.isNotEmpty()) { "No se detectó una trama IR clara." }
+                    val base = successful.first()
+                    val inferred = if (selectedHz == 0) inferCarrier(IrSignalAnalyzer.analyze(base).protocolHint) else selectedHz
+                    base.copy(carrierHz = inferred) to
+                        if (validated) "Validación x3 completada: " + successful.size + "/3 capturas válidas."
+                        else "Captura reconstruida: " + base.durationsMicros.size + " segmentos."
+                }
                 runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
                     capture.isEnabled = true
+                    validate.isEnabled = true
                     result.onSuccess {
-                        learnedCandidate = it.code
-                        if (it.code != null) {
-                            val analysis = IrSignalAnalyzer.analyze(it.code)
-                            status.text = it.message + "\nProtocolo probable: " +
-                                analysis.protocolHint + " (" + analysis.confidence + "%) · " +
-                                analysis.segments + " segmentos"
-                        } else {
-                            status.text = it.message
-                        }
+                        status.text = it.second
+                        renderLearnedResult(it.first, it.second)
                     }.onFailure {
                         status.text = "Error de captura: " + (it.message ?: "desconocido")
                     }
                 }
             }
         }
+        capture.setOnClickListener { doCapture(false) }
+        validate.setOnClickListener { doCapture(true) }
 
-        test.setOnClickListener {
-            val code = learnedCandidate ?: return@setOnClickListener toast("Primero captura una señal.")
-            sendAsync(code, status)
-        }
-
-        save.setOnClickListener {
-            val code = learnedCandidate ?: return@setOnClickListener toast("Primero captura una señal.")
-            val learned = store.loadLearned()
-            learned += code
-            store.saveLearned(learned)
-            saveDeviceDialog(DeviceCategory.TELEVISION, code)
+        val learned = store.loadLearned()
+        if (learned.isEmpty()) {
+            body.addView(emptyState(
+                "Aún no hay botones aprendidos",
+                "Puedes aprenderlos con un receptor IR o importar un archivo .ir de Flipper."
+            ), spacedMatch(18))
+        } else {
+            body.addView(sectionHeader("Biblioteca aprendida     " + learned.size))
+            learned.forEach { code ->
+                val row = card(16).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(bodyText("⌁", 20f, IOS_RED), LinearLayout.LayoutParams(dp(34), dp(44)))
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(bodyText(learnedName(code), 15f, Color.WHITE, Typeface.BOLD))
+                        addView(bodyText(
+                            (code.effectiveCarrierHz / 1000).toString() + " kHz · " +
+                                code.durationsMicros.size + " tiempos",
+                            12f,
+                            IOS_SECONDARY
+                        ))
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(bodyText("›", 26f, IOS_SECONDARY))
+                    setOnClickListener { sendAsync(code, screenStatusText("Transmitiendo…"), screen) }
+                }
+                body.addView(row, spacedMatch(8))
+            }
         }
     }
 
     private fun showSavedDevices() {
-        scanner.stop()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
-            setBackgroundColor(Color.BLACK)
+        val screen = beginScreen()
+        val body = installScreenBody("Mis equipos")
+        val devices = store.loadDevices()
+        val history = store.loadWorked()
+
+        val metrics = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
         }
-        contentHost.replace(root)
+        metrics.addView(metricCard(devices.size, "Equipos", "▣"), weighted())
+        metrics.addView(space(dp(8)))
+        metrics.addView(metricCard(0, "Mandos", "▤"), weighted())
+        metrics.addView(space(dp(8)))
+        metrics.addView(metricCard(history.size, "Funcionaron", "✓"), weighted())
+        body.addView(metrics, spacedMatch(20))
 
-        root.addView(sectionTitle("Mis equipos"))
-        val status = infoText("Toca un equipo para enviar POWER. Mantén pulsado para eliminarlo.")
-        val list = ListView(this)
-        root.addView(status)
-        root.addView(list, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f
-        ))
+        if (devices.isNotEmpty()) {
+            body.addView(sectionHeader("⚡  Acceso rápido"))
+            devices.forEach { device ->
+                val row = card(20).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(this@MainActivity).apply {
+                        text = categoryGlyph(device.category)
+                        textSize = 24f
+                        setTextColor(IOS_RED)
+                        gravity = Gravity.CENTER
+                        background = roundedDrawable(Color.argb(36, 255, 59, 48), 15)
+                    }, LinearLayout.LayoutParams(dp(54), dp(54)))
 
-        fun refresh() {
-            val devices = store.loadDevices()
-            list.adapter = darkArrayAdapter(
-                devices.map { it.name + " · " + it.category.shortTitle + " · " + it.code.effectiveCarrierHz + " Hz" }
-            )
-            list.setOnItemClickListener { _, _, position, _ ->
-                val device = devices.getOrNull(position) ?: return@setOnItemClickListener
-                sendAsync(device.code, status)
-            }
-            list.setOnItemLongClickListener { _, _, position, _ ->
-                val device = devices.getOrNull(position) ?: return@setOnItemLongClickListener true
-                AlertDialog.Builder(this)
-                    .setTitle("Eliminar")
-                    .setMessage("¿Eliminar " + device.name + "?")
-                    .setPositiveButton("Eliminar") { _, _ ->
-                        val updated = store.loadDevices()
-                        updated.removeAll { it.id == device.id }
-                        store.saveDevices(updated)
-                        refresh()
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(12), 0, dp(8), 0)
+                        addView(bodyText(device.name, 16f, Color.WHITE, Typeface.BOLD))
+                        addView(bodyText(device.code.displayName, 12f, IOS_SECONDARY))
+                        addView(bodyText(device.category.title, 11f, IOS_SECONDARY))
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+                    val power = TextView(this@MainActivity).apply {
+                        text = "⏻"
+                        textSize = 24f
+                        setTextColor(Color.WHITE)
+                        gravity = Gravity.CENTER
+                        background = roundedDrawable(IOS_RED, 24)
                     }
-                    .setNegativeButton("Cancelar", null)
-                    .show()
-                true
+                    addView(power, LinearLayout.LayoutParams(dp(46), dp(46)))
+                    setOnClickListener {
+                        sendAsync(device.code, screenStatusText("Transmitiendo…"), screen)
+                    }
+                    setOnLongClickListener {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("Eliminar equipo")
+                            .setMessage("¿Eliminar " + device.name + "?")
+                            .setPositiveButton("Eliminar") { _, _ ->
+                                val updated = store.loadDevices()
+                                updated.removeAll { it.id == device.id }
+                                store.saveDevices(updated)
+                                if (isScreenActive(screen)) showSavedDevices()
+                            }
+                            .setNegativeButton("Cancelar", null)
+                            .show()
+                        true
+                    }
+                }
+                body.addView(row, spacedMatch(10))
             }
         }
 
-        refresh()
+        if (history.isNotEmpty()) {
+            val historyHeader = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(bodyText("↻  Historial de aciertos", 18f, Color.WHITE, Typeface.BOLD),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            val clear = TextView(this).apply {
+                text = "Borrar"
+                textSize = 12f
+                setTextColor(IOS_RED)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                setOnClickListener {
+                    store.clearWorked()
+                    if (isScreenActive(screen)) showSavedDevices()
+                }
+            }
+            historyHeader.addView(clear)
+            body.addView(historyHeader, spacedMatch(8))
+
+            history.take(8).forEach { record ->
+                val date = java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT,
+                    java.text.DateFormat.SHORT
+                ).format(java.util.Date(record.createdAt))
+                val row = card(16).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(bodyText("✓", 22f, IOS_GREEN), LinearLayout.LayoutParams(dp(34), dp(44)))
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(bodyText(record.code.displayName, 14f, Color.WHITE, Typeface.BOLD))
+                        addView(bodyText(
+                            record.code.sourceLabel + " · " + record.code.effectiveCarrierHz / 1000 + " kHz",
+                            12f,
+                            IOS_SECONDARY
+                        ))
+                        addView(bodyText(date, 11f, IOS_SECONDARY))
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    val send = outlineButton("⌁")
+                    addView(send, LinearLayout.LayoutParams(dp(48), dp(42)))
+                    send.setOnClickListener {
+                        sendAsync(record.code, screenStatusText("Transmitiendo…"), screen)
+                    }
+                }
+                body.addView(row, spacedMatch(8))
+            }
+        }
+
+        if (devices.isEmpty() && history.isEmpty()) {
+            body.addView(emptyState(
+                "Tu biblioteca está vacía",
+                "Cuando encuentres un código que funcione, aparecerá aquí para que puedas volver a usarlo en segundos."
+            ), spacedMatch(40))
+        }
     }
 
     private fun showDiagnostics() {
-        scanner.stop()
-        val body = installScrollableBody()
+        val screen = beginScreen()
+        val body = installScreenBody("Diagnóstico")
+        val input = learner.inspectInput()
+        val outputReady = transmitter.active().isAvailable()
 
-        body.addView(sectionTitle("Diagnóstico"))
-        val diag = infoText(transmitter.diagnostics())
-        body.addView(diag)
+        val compatibility = card(18)
+        compatibility.addView(bodyText("✓  Compatibilidad del accesorio", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(10))
+        compatibility.addView(statusLine(
+            "Transmisión",
+            transmitter.diagnostics(),
+            outputReady
+        ), spacedMatch(8))
+        compatibility.addView(statusLine(
+            "Aprendizaje",
+            input.description,
+            input.isExternal
+        ), spacedMatch(8))
+        val conclusion = when {
+            outputReady && input.isExternal ->
+                "Compatible a nivel de audio para transmitir y aprender. Una captura válida confirmará el receptor IR."
+            outputReady ->
+                "Compatible para transmitir. No se detecta entrada externa: el aprendizaje IR no está disponible con el accesorio conectado."
+            input.isExternal ->
+                "Se detecta entrada externa para aprendizaje, pero la salida no parece preparada para transmitir IR."
+            else ->
+                "Pulsa «Comprobar accesorio». Para transmitir se necesita IR integrado o salida estéreo; para aprender, una entrada externa real."
+        }
+        compatibility.addView(bodyText(conclusion, 12f, IOS_SECONDARY), spacedMatch(10))
+        val check = primaryButton("⌁  COMPROBAR ACCESORIO")
+        compatibility.addView(check)
+        body.addView(compatibility, spacedMatch(14))
+        check.setOnClickListener {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_MIC)
+            } else if (isScreenActive(screen)) {
+                showDiagnostics()
+            }
+        }
 
-        val mode = enumSpinner(TransmitterMode.entries.map { it.title })
-        mode.setSelection(transmitter.mode.ordinal)
-        body.addView(label("Modo de transmisión"))
-        body.addView(mode)
+        val route = card(18)
+        route.addView(bodyText("⌁  " + transmitter.active().name, 15f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        route.addView(bodyText(transmitter.diagnostics(), 13f, IOS_SECONDARY), spacedMatch(10))
+        route.addView(divider(), spacedMatch(10))
+        route.addView(bodyText("✓  Audio mono: DESACTIVADO", 14f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("≡  Balance: centrado", 14f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("🔊  Volumen multimedia: 100 %", 14f, Color.LTGRAY), spacedMatch(8))
+        val sound = outlineButton("AJUSTES DE SONIDO")
+        route.addView(sound)
+        sound.setOnClickListener { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
+        body.addView(route, spacedMatch(14))
 
-        val refresh = secondaryButton("ACTUALIZAR")
-        val t36 = secondaryButton("PROBAR 36 kHz")
-        val t38 = actionButton("PROBAR 38 kHz")
-        val t40 = secondaryButton("PROBAR 40 kHz")
+        val carrierCard = card(18)
+        carrierCard.addView(bodyText("Prueba de portadora", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        carrierCard.addView(bodyText(
+            "La cámara de otro teléfono puede servir para comprobar que los LED IR emiten, aunque no confirma que la frecuencia sea correcta.",
+            12f,
+            IOS_SECONDARY
+        ), spacedMatch(10))
+        val tests = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf(36_000, 38_000, 40_000).forEachIndexed { index, hz ->
+            val button = outlineButton((hz / 1000).toString() + " kHz")
+            tests.addView(button, weighted())
+            if (index < 2) tests.addView(space(dp(8)))
+            button.setOnClickListener {
+                val status = screenStatusText("Probando " + hz / 1000 + " kHz…")
+                sendTestCarrier(hz, status)
+            }
+        }
+        carrierCard.addView(tests)
+        body.addView(carrierCard, spacedMatch(14))
 
-        body.addView(refresh)
-        body.addView(t36)
-        body.addView(t38)
-        body.addView(t40)
-
-        body.addView(infoText(
-            "Audio IR: usa volumen multimedia alto, salida estéreo y balance centrado. " +
-                "Android puede remuestrear algunas rutas; 96 kHz es preferible para este adaptador."
+        val how = card(18)
+        how.addView(bodyText("Cómo funciona", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        how.addView(bodyText(
+            "La app convierte cada señal IR en audio estéreo antifase. En este tipo de emisor, los dos canales excitan los LED en sentidos opuestos, por eso la frecuencia de audio es aproximadamente la mitad de la portadora IR deseada.",
+            14f,
+            IOS_SECONDARY
         ))
+        body.addView(how, spacedMatch(14))
 
-        mode.onItemSelectedListener = simpleSelection {
-            transmitter.mode = TransmitterMode.entries[mode.selectedItemPosition]
-            diag.text = transmitter.diagnostics()
-        }
-        refresh.setOnClickListener { diag.text = transmitter.diagnostics() }
-        t36.setOnClickListener { sendTestCarrier(36_000, diag) }
-        t38.setOnClickListener { sendTestCarrier(38_000, diag) }
-        t40.setOnClickListener { sendTestCarrier(40_000, diag) }
+        val settingsWhy = card(18)
+        settingsWhy.addView(bodyText("Por qué importan los ajustes de audio", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(10))
+        settingsWhy.addView(bodyText(
+            "🔊  Volumen: controla la amplitud eléctrica. Si baja demasiado, los LED IR reciben menos corriente y cae mucho el alcance.",
+            13f,
+            Color.LTGRAY
+        ), spacedMatch(8))
+        settingsWhy.addView(bodyText(
+            "≡  Balance: debe estar centrado porque el adaptador usa la diferencia entre L y R.",
+            13f,
+            Color.LTGRAY
+        ), spacedMatch(8))
+        settingsWhy.addView(bodyText(
+            "◖◗  Audio mono: debe estar desactivado. L y R están en oposición de fase y al mezclarlos pueden cancelarse casi por completo.",
+            13f,
+            Color.LTGRAY
+        ))
+        body.addView(settingsWhy, spacedMatch(14))
 
-        val audioSettings = secondaryButton("AJUSTES DE SONIDO")
-        body.addView(audioSettings)
-        audioSettings.setOnClickListener {
-            startActivity(Intent(Settings.ACTION_SOUND_SETTINGS))
+        val oled = card(18)
+        val oledRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText("◐  Pantalla OLED", 16f, Color.WHITE, Typeface.BOLD),
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
+        val oledToggle = Switch(this).apply {
+            isChecked = oledMode()
+            thumbTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+        }
+        oledRow.addView(oledToggle)
+        oled.addView(oledRow, spacedMatch(8))
+        val oledDescription = bodyText(
+            if (oledMode()) "Negro puro activado. Reduce los píxeles iluminados y aumenta el contraste en pantallas OLED."
+            else "Usando la apariencia estándar oscura de Android.",
+            12f,
+            IOS_SECONDARY
+        )
+        oled.addView(oledDescription, spacedMatch(8))
+        oled.addView(bodyText("●   ●   ●   Negro real · superficies mínimas · acento rojo", 11f, IOS_SECONDARY))
+        body.addView(oled, spacedMatch(14))
+        oledToggle.setOnCheckedChangeListener { _, enabled ->
+            preferences.edit().putBoolean(PREF_OLED_MODE, enabled).apply()
+            if (isScreenActive(screen)) selectTab(currentTab)
+        }
+
+        val backup = card(18)
+        backup.addView(bodyText("Copia de seguridad", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
+        backup.addView(bodyText(
+            "Exporta tus equipos, señales aprendidas e historial a un JSON para conservarlos fuera de la app.",
+            12f,
+            IOS_SECONDARY
+        ), spacedMatch(10))
+        val export = outlineButton("↑  EXPORTAR JSON")
+        backup.addView(export)
+        export.setOnClickListener {
+            val share = Intent(Intent.ACTION_SEND).apply {
+                type = "application/json"
+                putExtra(Intent.EXTRA_TEXT, store.exportBackup())
+            }
+            startActivity(Intent.createChooser(share, "Exportar copia de seguridad"))
+        }
+        body.addView(backup, spacedMatch(20))
     }
 
     private fun sendTestCarrier(hz: Int, status: TextView) {
@@ -570,16 +1492,23 @@ class MainActivity : Activity() {
         sendAsync(code, status)
     }
 
-    private fun sendAsync(code: IrCode, status: TextView) {
+    private fun sendAsync(code: IrCode, status: TextView, screen: Long = screenGeneration) {
         val active = transmitter.active()
         status.text = "Enviando " + code.displayName + " mediante " + active.name + "…"
         worker.execute {
             val result = runCatching { active.send(code) }
             runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
                 result.onSuccess {
                     status.text = "Enviado: " + code.displayName + " · " + code.effectiveCarrierHz + " Hz"
+                    if (status.parent == null) {
+                        toast("Enviado: " + code.displayName)
+                    }
                 }.onFailure {
                     status.text = "Error: " + (it.message ?: "desconocido")
+                    if (status.parent == null) {
+                        toast("Error: " + (it.message ?: "desconocido"))
+                    }
                 }
             }
         }
@@ -623,14 +1552,17 @@ class MainActivity : Activity() {
 
     private fun saveDeviceDialog(category: DeviceCategory, code: IrCode, suggested: String = code.displayName) {
         val input = EditText(this).apply {
-            setText(suggested)
-            selectAll()
+            hint = defaultDeviceName(category)
+            if (suggested != code.displayName) {
+                setText(suggested)
+                selectAll()
+            }
         }
         AlertDialog.Builder(this)
-            .setTitle("Guardar equipo/código")
+            .setTitle("Guardar")
             .setView(input)
             .setPositiveButton("Guardar") { _, _ ->
-                val name = input.text.toString().trim().ifBlank { category.shortTitle }
+                val name = input.text.toString().trim().ifBlank { defaultDeviceName(category) }
                 store.addDevice(SavedDevice(name = name, category = category, code = code))
                 toast("Guardado: " + name)
             }
@@ -665,30 +1597,101 @@ class MainActivity : Activity() {
         if (importedSignals.isEmpty()) {
             toast("El archivo no contiene señales Flipper compatibles.")
         } else {
-            showImportedSignals(importedSignals, DeviceCategory.TELEVISION)
+            val learned = store.loadLearned()
+            importedSignals.forEach { signal ->
+                learned += signal.code.copy(
+                    id = "learned:" + signal.name.replace(":", "_") + ":" + java.util.UUID.randomUUID()
+                )
+            }
+            store.saveLearned(learned)
+            toast("Importadas " + importedSignals.size + " señal(es).")
+            if (currentTab == 3) showLearn()
         }
     }
 
-    private fun installScrollableBody(): LinearLayout {
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_MIC && currentTab == 3) {
+            showLearn()
+        }
+    }
+
+    private fun installScreenBody(title: String, onBack: (() -> Unit)? = null): LinearLayout {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(screenBackground())
+        }
+
+        val navigation = FrameLayout(this).apply {
+            setBackgroundColor(screenBackground())
+        }
+        val titleView = TextView(this).apply {
+            text = title
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+        }
+        navigation.addView(titleView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(48),
+            Gravity.CENTER
+        ))
+        if (onBack != null) {
+            val back = TextView(this).apply {
+                text = "‹"
+                textSize = 34f
+                gravity = Gravity.CENTER
+                setTextColor(IOS_RED)
+                setPadding(dp(6), 0, dp(8), 0)
+                isClickable = true
+                setOnClickListener { onBack() }
+            }
+            navigation.addView(back, FrameLayout.LayoutParams(
+                dp(48),
+                dp(48),
+                Gravity.START or Gravity.CENTER_VERTICAL
+            ))
+        }
+        page.addView(navigation, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(48)
+        ))
+
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(28))
-            setBackgroundColor(Color.BLACK)
+            setPadding(dp(16), dp(8), dp(16), dp(28))
+            setBackgroundColor(screenBackground())
         }
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.BLACK)
+            isFillViewport = true
+            setBackgroundColor(screenBackground())
             addView(body, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ))
         }
-        contentHost.removeAllViews()
-        contentHost.addView(scroll, FrameLayout.LayoutParams(
+        page.addView(scroll, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
+            0,
+            1f
         ))
+        contentHost.replace(page)
         return body
     }
+
+    private fun beginScreen(): Long {
+        scanner.stop()
+        screenGeneration += 1
+        return screenGeneration
+    }
+
+    private fun isScreenActive(screen: Long): Boolean =
+        screenGeneration == screen && !isFinishing && !isDestroyed
 
     private fun FrameLayout.replace(view: View) {
         if (view.parent === this) return
@@ -699,78 +1702,368 @@ class MainActivity : Activity() {
         ))
     }
 
-    private fun sectionTitle(value: String) = TextView(this).apply {
-        text = value
-        textSize = 21f
-        setTextColor(Color.WHITE)
-        setPadding(0, dp(8), 0, dp(12))
-    }
-
-    private fun label(value: String) = TextView(this).apply {
-        text = value
-        textSize = 13f
-        setTextColor(Color.GRAY)
-        setPadding(0, dp(10), 0, dp(3))
-    }
-
     private fun infoText(value: String) = TextView(this).apply {
         text = value
+        textSize = 13f
+        setTextColor(IOS_SECONDARY)
+        setPadding(dp(4), dp(8), dp(4), dp(8))
+    }
+
+    private fun bodyText(
+        value: String,
+        size: Float,
+        color: Int,
+        style: Int = Typeface.NORMAL
+    ) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        typeface = Typeface.create(Typeface.DEFAULT, style)
+        includeFontPadding = false
+    }
+
+    private fun sectionHeader(value: String) = bodyText(
+        value,
+        18f,
+        Color.WHITE,
+        Typeface.BOLD
+    ).apply {
+        setPadding(dp(2), dp(6), dp(2), dp(10))
+    }
+
+    private fun card(radius: Int = 18) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        background = roundedDrawable(
+            if (oledMode()) IOS_SURFACE else Color.rgb(38, 38, 40),
+            radius,
+            if (oledMode()) IOS_BORDER else Color.rgb(58, 58, 60)
+        )
+    }
+
+    private fun roundedDrawable(fillColor: Int, radiusDp: Int, strokeColor: Int? = null): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fillColor)
+            cornerRadius = dp(radiusDp).toFloat()
+            if (strokeColor != null) setStroke(dp(1).coerceAtLeast(1), strokeColor)
+        }
+
+    private fun circleDrawable(fillColor: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(fillColor)
+        }
+
+    private fun primaryButton(value: String) = Button(this).apply {
+        text = value
+        isAllCaps = false
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        background = roundedDrawable(IOS_RED, 12)
+        minHeight = dp(50)
+        setPadding(dp(12), dp(11), dp(12), dp(11))
+        stateListAnimator = null
+    }
+
+    private fun outlineButton(value: String) = Button(this).apply {
+        text = value
+        isAllCaps = false
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        background = roundedDrawable(Color.argb(12, 255, 255, 255), 12, Color.argb(40, 255, 255, 255))
+        minHeight = dp(46)
+        setPadding(dp(10), dp(9), dp(10), dp(9))
+        stateListAnimator = null
+    }
+
+    private fun tintedButton(value: String, tint: Int) = Button(this).apply {
+        text = value
+        isAllCaps = false
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        typeface = Typeface.DEFAULT_BOLD
+        background = roundedDrawable(tint, 12)
+        minHeight = dp(48)
+        stateListAnimator = null
+    }
+
+    private fun oledInput(hintValue: String) = EditText(this).apply {
+        hint = hintValue
+        setTextColor(Color.WHITE)
+        setHintTextColor(IOS_SECONDARY)
         textSize = 15f
-        setTextColor(Color.LTGRAY)
-        setPadding(dp(4), dp(10), dp(4), dp(10))
+        setSingleLine(true)
+        background = roundedDrawable(
+            if (oledMode()) IOS_SURFACE else Color.rgb(44, 44, 46),
+            12,
+            if (oledMode()) IOS_BORDER else Color.rgb(70, 70, 72)
+        )
+        setPadding(dp(12), dp(11), dp(12), dp(11))
     }
 
-    private fun actionButton(value: String) = Button(this).apply {
-        text = value
-        isAllCaps = false
-        setTextColor(Color.WHITE)
-        setBackgroundColor(Color.rgb(190, 35, 35))
-    }
-
-    private fun secondaryButton(value: String) = Button(this).apply {
-        text = value
-        isAllCaps = false
-        setTextColor(Color.WHITE)
-        setBackgroundColor(Color.rgb(45, 45, 45))
-    }
-
-    private fun tabButton(title: String, action: () -> Unit) = Button(this).apply {
-        text = title
-        isAllCaps = false
-        setTextColor(Color.WHITE)
-        setBackgroundColor(Color.rgb(28, 28, 28))
-        setPadding(dp(14), dp(7), dp(14), dp(7))
-        setOnClickListener { action() }
-    }
-
-    private fun enumSpinner(values: List<String>) = Spinner(this).apply {
-        adapter = darkArrayAdapter(values)
-    }
-
-    private fun darkArrayAdapter(values: List<String>): ArrayAdapter<String> =
-        object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, values) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                return super.getView(position, convertView, parent).also {
-                    (it as? TextView)?.setTextColor(Color.WHITE)
-                    it.setBackgroundColor(Color.rgb(20, 20, 20))
-                }
+    private fun segmentedControl(
+        labels: List<String>,
+        selectedIndex: Int,
+        onSelected: (Int) -> Unit
+    ): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            background = roundedDrawable(
+                if (oledMode()) Color.argb(12, 255, 255, 255) else Color.rgb(44, 44, 46),
+                10,
+                if (oledMode()) Color.argb(18, 255, 255, 255) else Color.rgb(68, 68, 70)
+            )
+            tag = selectedIndex.coerceIn(0, (labels.size - 1).coerceAtLeast(0))
+        }
+        labels.forEachIndexed { index, label ->
+            val item = TextView(this).apply {
+                text = label
+                textSize = if (labels.size >= 4) 11f else 12f
+                gravity = Gravity.CENTER
+                typeface = Typeface.DEFAULT_BOLD
+                minHeight = dp(34)
             }
-
-            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
-                return super.getDropDownView(position, convertView, parent).also {
-                    (it as? TextView)?.setTextColor(Color.WHITE)
-                    it.setBackgroundColor(Color.rgb(25, 25, 25))
-                }
+            row.addView(item, LinearLayout.LayoutParams(
+                0,
+                dp(34),
+                1f
+            ))
+            item.setOnClickListener {
+                row.tag = index
+                updateSegmentAppearance(row)
+                onSelected(index)
             }
         }
+        updateSegmentAppearance(row)
+        return row
+    }
 
-    private fun simpleSelection(action: () -> Unit) =
-        object : android.widget.AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                action()
+    private fun wireSegmentCallback(row: LinearLayout, callback: (Int) -> Unit) {
+        for (i in 0 until row.childCount) {
+            row.getChildAt(i).setOnClickListener {
+                row.tag = i
+                updateSegmentAppearance(row)
+                callback(i)
             }
-            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
         }
+    }
+
+    private fun setSegmentEnabled(row: LinearLayout, enabled: Boolean) {
+        row.alpha = if (enabled) 1f else 0.45f
+        for (i in 0 until row.childCount) {
+            row.getChildAt(i).apply {
+                isEnabled = enabled
+                isClickable = enabled
+            }
+        }
+    }
+
+    private fun updateSegmentAppearance(row: LinearLayout) {
+        val selected = (row.tag as? Int) ?: 0
+        for (i in 0 until row.childCount) {
+            val item = row.getChildAt(i) as? TextView ?: continue
+            val active = i == selected
+            item.setTextColor(if (active) Color.WHITE else IOS_SECONDARY)
+            item.background = if (active) roundedDrawable(IOS_RED, 8)
+            else roundedDrawable(Color.TRANSPARENT, 8)
+        }
+    }
+
+    private fun browserRow(title: String, trailing: String, action: () -> Unit): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(44)
+            setPadding(dp(8), dp(5), dp(6), dp(5))
+            addView(bodyText(title, 14f, Color.WHITE), LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            ))
+            addView(bodyText(trailing, 12f, IOS_SECONDARY))
+            isClickable = true
+            setOnClickListener { action() }
+        }
+
+    private fun emptyState(title: String, message: String): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(24), dp(18), dp(24))
+            addView(bodyText("⌾", 38f, IOS_SECONDARY).apply { gravity = Gravity.CENTER })
+            addView(bodyText(title, 17f, Color.WHITE, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(6))
+            })
+            addView(bodyText(message, 13f, IOS_SECONDARY).apply {
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+            })
+        }
+
+    private fun metricCard(value: Int, labelText: String, glyph: String): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(10), dp(4), dp(10))
+            background = roundedDrawable(IOS_SURFACE, 17, IOS_BORDER)
+            addView(bodyText(glyph, 18f, IOS_RED).apply { gravity = Gravity.CENTER })
+            addView(bodyText(value.toString(), 20f, Color.WHITE, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(3), 0, dp(2))
+            })
+            addView(bodyText(labelText, 10f, IOS_SECONDARY).apply { gravity = Gravity.CENTER })
+        }
+
+    private fun statusLine(title: String, subtitle: String, ok: Boolean): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(bodyText(if (ok) "✓" else "✕", 20f, if (ok) IOS_GREEN else IOS_RED),
+                LinearLayout.LayoutParams(dp(34), dp(40)))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(bodyText(title, 14f, Color.WHITE, Typeface.BOLD))
+                addView(bodyText(subtitle, 11f, IOS_SECONDARY))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(Color.argb(25, 255, 255, 255))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+    }
+
+    private fun controlHero(): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            val icon = TextView(this@MainActivity).apply {
+                text = categoryGlyph(selectedCategory)
+                textSize = 44f
+                gravity = Gravity.CENTER
+                setTextColor(IOS_RED)
+                background = circleDrawable(Color.argb(40, 255, 59, 48))
+            }
+            addView(icon, LinearLayout.LayoutParams(dp(104), dp(104)))
+            addView(bodyText("IR UNIVERSAL", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.16f
+                setPadding(0, dp(12), 0, dp(7))
+            })
+            addView(bodyText(selectedCategory.title, 21f, Color.WHITE, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+            })
+            addView(bodyText(categoryExplanation(selectedCategory), 13f, IOS_SECONDARY).apply {
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+                setPadding(dp(8), dp(8), dp(8), 0)
+            })
+        }
+
+    private fun accessoryStatusCard(): View {
+        val active = transmitter.active()
+        val ready = active.isAvailable()
+        val tint = if (ready) IOS_GREEN else Color.rgb(255, 149, 0)
+        return card(20).apply {
+            val top = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(bodyText(if (ready) "✓" else "!", 22f, tint),
+                    LinearLayout.LayoutParams(dp(38), dp(42)))
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(bodyText(
+                        if (ready) "Accesorio listo" else "Revisa el accesorio",
+                        15f,
+                        Color.WHITE,
+                        Typeface.BOLD
+                    ))
+                    addView(bodyText(active.name, 12f, IOS_SECONDARY))
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(View(this@MainActivity).apply {
+                    background = circleDrawable(tint)
+                }, LinearLayout.LayoutParams(dp(9), dp(9)))
+            }
+            addView(top, spacedMatch(8))
+            addView(bodyText(transmitter.diagnostics(), 11f, IOS_SECONDARY), spacedMatch(8))
+            addView(bodyText(
+                "Recomendado: volumen 100 %, Audio mono desactivado y balance centrado.",
+                11f,
+                IOS_SECONDARY
+            ))
+        }
+    }
+
+    private fun categoryGlyph(category: DeviceCategory): String = when (category) {
+        DeviceCategory.TELEVISION -> "▣"
+        DeviceCategory.AIR_CONDITIONER -> "❄"
+        DeviceCategory.PROJECTOR -> "▰"
+    }
+
+    private fun categoryButtonTitle(category: DeviceCategory): String = when (category) {
+        DeviceCategory.TELEVISION -> "⏻  APAGAR TELEVISORES"
+        DeviceCategory.AIR_CONDITIONER -> "⏻  APAGAR AIRES"
+        DeviceCategory.PROJECTOR -> "⏻  APAGAR PROYECTORES"
+    }
+
+    private fun defaultDeviceName(category: DeviceCategory): String = when (category) {
+        DeviceCategory.TELEVISION -> "Mi TV"
+        DeviceCategory.AIR_CONDITIONER -> "Mi aire"
+        DeviceCategory.PROJECTOR -> "Mi proyector"
+    }
+
+    private fun categoryExplanation(category: DeviceCategory): String = when (category) {
+        DeviceCategory.TELEVISION ->
+            "Prueba primero los códigos universales y TV-B-Gone que ya sabemos que funcionan, y después la base ampliada."
+        DeviceCategory.AIR_CONDITIONER ->
+            "Recorre señales POWER/OFF de mandos de aire acondicionado, priorizando capturas RAW."
+        DeviceCategory.PROJECTOR ->
+            "Recorre señales POWER/OFF de proyectores de distintas marcas y modelos."
+    }
+
+    private fun paceHelp(pace: ScanPace): String = when (pace) {
+        ScanPace.FAST -> "Recorre los códigos rápidamente."
+        ScanPace.IDENTIFY -> "Deja más tiempo entre códigos para poder pulsar «FUNCIONÓ»."
+    }
+
+    private fun inferCarrier(protocolHint: String): Int {
+        val value = protocolHint.lowercase()
+        return when {
+            value.contains("rc5") || value.contains("rc6") -> 36_000
+            value.contains("sirc") || value.contains("sony") || value.contains("pioneer") -> 40_000
+            else -> 38_000
+        }
+    }
+
+    private fun learnedName(code: IrCode): String {
+        if (!code.id.startsWith("learned:")) return code.displayName
+        return code.id.removePrefix("learned:").substringBefore(":").replace("_", " ").ifBlank { "Power" }
+    }
+
+    private fun detailsStatus(container: LinearLayout): TextView {
+        val existing = (0 until container.childCount)
+            .map { container.getChildAt(it) }
+            .filterIsInstance<TextView>()
+            .firstOrNull { it.tag == "send-status" }
+        if (existing != null) return existing
+        return infoText("").apply {
+            tag = "send-status"
+            setPadding(0, dp(8), 0, 0)
+            container.addView(this)
+        }
+    }
+
+    private fun screenStatusText(initial: String): TextView =
+        infoText(initial).apply { tag = "detached-status" }
+
+    private fun oledMode(): Boolean = preferences.getBoolean(PREF_OLED_MODE, true)
+
+    private fun screenBackground(): Int =
+        if (oledMode()) Color.BLACK else Color.rgb(18, 18, 18)
 
     private fun simpleTextWatcher(action: () -> Unit) = object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -779,10 +2072,19 @@ class MainActivity : Activity() {
     }
 
     private fun weighted() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+    private fun spacedMatch(bottomDp: Int) = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { bottomMargin = dp(bottomDp) }
+
     private fun matchWrap() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
         ViewGroup.LayoutParams.WRAP_CONTENT
     )
+
+    private fun space(width: Int): Space = Space(this).apply {
+        layoutParams = LinearLayout.LayoutParams(width, 1)
+    }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -791,6 +2093,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        screenGeneration += 1
         scanner.close()
         worker.shutdownNow()
         super.onDestroy()

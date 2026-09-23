@@ -11,9 +11,12 @@ object IrCodeCatalog {
                         TvRegion.NORTH_AMERICA -> GeneratedTvBGoneDatabase.northAmerica
                     }
                 )
+                addAll(GeneratedFlipperPowerDatabase.televisions)
             }
-            DeviceCategory.AIR_CONDITIONER,
-            DeviceCategory.PROJECTOR -> emptyList()
+            DeviceCategory.AIR_CONDITIONER ->
+                GeneratedFlipperPowerDatabase.airConditioners
+            DeviceCategory.PROJECTOR ->
+                GeneratedFlipperPowerDatabase.projectors
         }
     }
 

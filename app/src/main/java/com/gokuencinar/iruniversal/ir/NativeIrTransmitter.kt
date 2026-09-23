@@ -2,6 +2,7 @@ package com.gokuencinar.iruniversal.ir
 
 import android.content.Context
 import android.hardware.ConsumerIrManager
+import kotlin.math.abs
 
 class NativeIrTransmitter(context: Context) : IrTransmitter {
     private val manager = context.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
@@ -23,13 +24,21 @@ class NativeIrTransmitter(context: Context) : IrTransmitter {
 
         val carrier = code.effectiveCarrierHz
         val supported = ir.carrierFrequencies
-        if (supported != null && supported.isNotEmpty()) {
-            require(supported.any { carrier in it.minFrequency..it.maxFrequency }) {
-                "La portadora " + carrier + " Hz no está dentro de los rangos anunciados por el emisor"
+        val transmitCarrier = if (supported != null && supported.isNotEmpty() &&
+            supported.none { carrier in it.minFrequency..it.maxFrequency }
+        ) {
+            val nearest = supported
+                .flatMap { listOf(it.minFrequency, it.maxFrequency) }
+                .minByOrNull { abs(it - carrier) }
+                ?: carrier
+            val maxAdjustment = (carrier * 0.05).toInt().coerceAtLeast(1)
+            require(abs(nearest - carrier) <= maxAdjustment) {
+                "La portadora " + carrier + " Hz está demasiado lejos de los rangos anunciados por el emisor"
             }
-        }
+            nearest
+        } else carrier
 
-        ir.transmit(carrier, code.durationsMicros.toIntArray())
+        ir.transmit(transmitCarrier, code.durationsMicros.toIntArray())
     }
 
     override fun diagnostics(): String {
