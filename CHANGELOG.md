@@ -1,6 +1,6 @@
-# Changelog — TV-B-Gone / IR Universal para Android
+# Changelog — TVBGoneAndroid
 
-Historial de cambios de la versión Android independiente de IR Universal.
+Historial de cambios de **TVBGoneAndroid**.
 
 **Compatibilidad:** Android 11 o posterior (`minSdk 30`). El soporte de emisión depende del hardware disponible: blaster IR integrado compatible con `ConsumerIrManager` o adaptador IR estéreo por audio.
 
@@ -25,7 +25,7 @@ Historial de cambios de la versión Android independiente de IR Universal.
 
 ### Cambiado
 - El port pasa a mantenerse como repositorio Android independiente en lugar de una rama secundaria del proyecto iOS.
-- El nombre visible de la aplicación se unifica como **TV-B-Gone / IR Universal**.
+- El nombre visible de la aplicación se unifica como **TVBGoneAndroid**.
 - Se incorpora un icono de launcher propio y se actualizan sus recursos.
 
 ### Corregido
