@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "app/**"
+      - "scripts/**"
       - "build.gradle.kts"
       - "settings.gradle.kts"
       - "gradle.properties"
@@ -15,6 +16,7 @@ on:
       - main
     paths:
       - "app/**"
+      - "scripts/**"
       - "build.gradle.kts"
       - "settings.gradle.kts"
       - "gradle.properties"
@@ -42,6 +44,29 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
+
+      - name: Generate expanded IR database
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          COMMUNITY_SHA="d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d"
+          OFFICIAL_SHA="f7b15366521cc81ba11b341538f0097bddbb748b"
+
+          COMMUNITY_DIR="$RUNNER_TEMP/flipper-community"
+          OFFICIAL_DIR="$RUNNER_TEMP/flipper-official"
+
+          git init "$COMMUNITY_DIR"
+          git -C "$COMMUNITY_DIR" remote add origin https://github.com/Lucaslhm/Flipper-IRDB.git
+          git -C "$COMMUNITY_DIR" fetch --depth 1 origin "$COMMUNITY_SHA"
+          git -C "$COMMUNITY_DIR" checkout --detach FETCH_HEAD
+
+          git init "$OFFICIAL_DIR"
+          git -C "$OFFICIAL_DIR" remote add origin https://github.com/flipperdevices/IRDB.git
+          git -C "$OFFICIAL_DIR" fetch --depth 1 origin "$OFFICIAL_SHA"
+          git -C "$OFFICIAL_DIR" checkout --detach FETCH_HEAD
+
+          python3 scripts/generate_extended_ir_database.py             "$COMMUNITY_DIR"             "$OFFICIAL_DIR"             app/src/main/java/com/gokuencinar/iruniversal/ir/GeneratedExtendedIrDatabase.kt
 
       - name: Assemble debug APK
         run: gradle --stacktrace :app:assembleDebug
