@@ -22,68 +22,112 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
     private val pendingStep = AtomicInteger(0)
     private val recent = ArrayDeque<IrCode>()
 
+    @Volatile private var currentIndex = 0
+    @Volatile private var presentedIndex = -1
+
     fun start(codes: List<IrCode>, pace: ScanPace, callback: (Progress) -> Unit) {
         val scanGeneration = generation.incrementAndGet()
         val scanCodes = codes.toList()
+
         synchronized(recent) { recent.clear() }
+        currentIndex = 0
+        presentedIndex = -1
         pendingStep.set(0)
         stopped.set(false)
         paused.set(false)
 
         executor.execute {
-            var index = 0
-            while (!stopped.get() && generation.get() == scanGeneration && index < scanCodes.size) {
-                val requestedStep = pendingStep.getAndSet(0)
-                if (requestedStep != 0 && scanCodes.isNotEmpty()) {
-                    index = (index + requestedStep).coerceIn(0, scanCodes.lastIndex)
-                }
-                if (paused.get()) {
+            while (!stopped.get() && generation.get() == scanGeneration) {
+                val manualDelta = consumePendingStep()
+
+                if (manualDelta != 0) {
+                    paused.set(true)
+                    val base = if (presentedIndex >= 0) presentedIndex else currentIndex
+                    currentIndex = (base + manualDelta).coerceIn(0, scanCodes.lastIndex)
+                } else if (paused.get()) {
                     if (!sleep(40)) break
                     continue
                 }
 
-                val code = scanCodes[index]
+                if (currentIndex !in scanCodes.indices) {
+                    if (!paused.get() && currentIndex >= scanCodes.size) {
+                        callback(Progress(scanCodes.size, scanCodes.size, null, false))
+                        stopped.set(true)
+                    }
+                    break
+                }
+
+                val codeIndex = currentIndex
+                val code = scanCodes[codeIndex]
                 var error: String? = null
+
                 try {
                     transmitterProvider().send(code)
-                    synchronized(recent) {
-                        recent.remove(code)
-                        recent.addLast(code)
-                        while (recent.size > 8) recent.removeFirst()
-                    }
+                    remember(code)
                 } catch (e: Exception) {
                     error = e.message ?: e.javaClass.simpleName
                 }
 
                 if (stopped.get() || generation.get() != scanGeneration) break
-                index++
-                callback(Progress(index, scanCodes.size, code, false, error))
 
-                if (!stopped.get() && generation.get() == scanGeneration && !sleep(pace.gapMillis)) {
+                presentedIndex = codeIndex
+                callback(
+                    Progress(
+                        index = codeIndex + 1,
+                        total = scanCodes.size,
+                        code = code,
+                        paused = paused.get(),
+                        error = error
+                    )
+                )
+
+                if (manualDelta != 0) {
+                    // Manual stepping mirrors iOS: stepping pauses the automatic
+                    // sequence and previews exactly one code at a time.
+                    if (!sleep(40)) break
+                    continue
+                }
+
+                currentIndex = codeIndex + 1
+
+                if (currentIndex >= scanCodes.size) {
+                    callback(Progress(scanCodes.size, scanCodes.size, null, false))
+                    stopped.set(true)
                     break
                 }
-            }
 
-            if (!stopped.get() && generation.get() == scanGeneration && index >= scanCodes.size) {
-                callback(Progress(scanCodes.size, scanCodes.size, null, false))
-                stopped.set(true)
+                if (!sleep(pace.gapMillis)) break
             }
         }
     }
 
-    fun pause() { paused.set(true) }
-    fun resume() { paused.set(false) }
+    fun pause() {
+        if (!stopped.get()) paused.set(true)
+    }
+
+    fun resume() {
+        if (!stopped.get()) {
+            pendingStep.set(0)
+            paused.set(false)
+        }
+    }
+
     fun step(delta: Int) {
         if (!stopped.get() && delta != 0) {
+            paused.set(true)
             pendingStep.addAndGet(delta.coerceIn(-1, 1))
         }
     }
+
     fun stop() {
         generation.incrementAndGet()
         stopped.set(true)
         paused.set(false)
         pendingStep.set(0)
+        currentIndex = 0
+        presentedIndex = -1
     }
+
     fun isRunning(): Boolean = !stopped.get()
     fun isPaused(): Boolean = paused.get()
 
@@ -94,6 +138,23 @@ class IrScanner(private val transmitterProvider: () -> IrTransmitter) {
     fun close() {
         stop()
         executor.shutdownNow()
+    }
+
+    private fun remember(code: IrCode) {
+        synchronized(recent) {
+            recent.remove(code)
+            recent.addLast(code)
+            while (recent.size > 8) recent.removeFirst()
+        }
+    }
+
+    private fun consumePendingStep(): Int {
+        while (true) {
+            val value = pendingStep.get()
+            if (value == 0) return 0
+            val step = if (value > 0) 1 else -1
+            if (pendingStep.compareAndSet(value, value - step)) return step
+        }
     }
 
     private fun sleep(millis: Long): Boolean = try {
