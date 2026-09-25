@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val ciBuildNumber = providers.environmentVariable("GITHUB_RUN_NUMBER")
+    .orNull
+    ?.toIntOrNull()
+    ?: 1
+
 android {
     namespace = "com.gokuencinar.iruniversal"
     compileSdk = 35
@@ -12,7 +17,7 @@ android {
         applicationId = "com.gokuencinar.iruniversal"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
+        versionCode = ciBuildNumber
         versionName = "0.1.0-android"
     }
 
