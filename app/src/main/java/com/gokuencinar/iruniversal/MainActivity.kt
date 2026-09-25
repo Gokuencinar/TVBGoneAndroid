@@ -260,7 +260,7 @@ class MainActivity : Activity() {
             addView(bodyText("◉  Barrido universal", 16f, Color.WHITE, Typeface.BOLD),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(bodyText(
-                IrCodeCatalog.codes(selectedCategory, selectedRegion).size.toString() + " códigos",
+                IrCodeCatalog.scanCodes(selectedCategory, selectedRegion).size.toString() + " códigos",
                 12f,
                 IOS_SECONDARY
             ))
@@ -341,7 +341,7 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
 
-            val codes = IrCodeCatalog.codes(selectedCategory, selectedRegion)
+            val codes = IrCodeCatalog.scanCodes(selectedCategory, selectedRegion)
             if (codes.isEmpty()) {
                 status.text = "No hay una base offline para esta categoría todavía. Usa Online o importa un mando .ir."
                 activeCard.visibility = View.VISIBLE
