@@ -4,3 +4,9 @@
 **/build
 *.iml
 .DS_Store
+
+# Private Android signing material
+scripts/.signing-private/
+*.jks
+*.keystore
+*.p12
