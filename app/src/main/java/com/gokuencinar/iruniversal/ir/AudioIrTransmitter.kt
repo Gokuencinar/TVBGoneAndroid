@@ -10,10 +10,22 @@ import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.sin
 
+enum class AudioTransmissionMode(val title: String, val detail: String) {
+    COMPATIBLE(
+        "Compatible",
+        "Senoide a escala completa. Prioriza la fidelidad de la portadora y la compatibilidad entre accesorios."
+    ),
+    MAXIMUM_RANGE(
+        "Máximo alcance",
+        "Aumenta la energía media mediante limitación controlada. Si un equipo responde peor, vuelve a Compatible."
+    )
+}
+
 class AudioIrTransmitter(private val context: Context) : IrTransmitter {
     override val name: String = "Adaptador de audio"
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    var transmissionMode: AudioTransmissionMode = AudioTransmissionMode.COMPATIBLE
 
     override fun isAvailable(): Boolean = chooseSampleRate() > 0
 
@@ -81,7 +93,6 @@ class AudioIrTransmitter(private val context: Context) : IrTransmitter {
         var cursor = (prePadMicros * sampleRate / 1_000_000.0).toInt()
         val audioHz = code.effectiveCarrierHz / 2.0
         val phaseIncrement = 2.0 * PI * audioHz / sampleRate
-        val amplitude = 0.999f
 
         code.durationsMicros.forEachIndexed { index, micros ->
             val segmentFrames = (micros * sampleRate / 1_000_000.0).toInt()
@@ -89,7 +100,12 @@ class AudioIrTransmitter(private val context: Context) : IrTransmitter {
             if (index % 2 == 0) {
                 var phase = 0.0
                 while (cursor < end) {
-                    val sample = amplitude * sin(phase).toFloat()
+                    val sine = sin(phase).toFloat()
+                    val sample = when (transmissionMode) {
+                        AudioTransmissionMode.COMPATIBLE -> sine * 0.999f
+                        AudioTransmissionMode.MAXIMUM_RANGE ->
+                            (sine * 1.35f).coerceIn(-1.0f, 1.0f)
+                    }
                     val pos = cursor * 2
                     out[pos] = sample
                     out[pos + 1] = -sample
