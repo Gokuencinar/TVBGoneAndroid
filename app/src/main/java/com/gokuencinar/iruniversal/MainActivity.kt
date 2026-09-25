@@ -587,6 +587,201 @@ class MainActivity : Activity() {
             save.setOnClickListener { saveDeviceDialog(selectedCategory, value) }
         }
 
+        fun brandPowerCodes(brand: String): List<IrCode> =
+            IrCodeCatalog.scanCodes(selectedCategory, selectedRegion)
+                .filter(::sourceMatches)
+                .filter { brandName(it).equals(brand, ignoreCase = true) }
+
+        fun stopBrandScanForNavigation() {
+            if (scanner.isRunning()) scanner.stop()
+        }
+
+        fun addBrandSweep(brand: String) {
+            val powerCodes = brandPowerCodes(brand)
+            if (powerCodes.size <= 1) return
+
+            val sweepCard = card(18)
+            sweepCard.addView(
+                bodyText("◉  Barrido de " + brand, 16f, Color.WHITE, Typeface.BOLD),
+                spacedMatch(5)
+            )
+            sweepCard.addView(
+                bodyText(
+                    powerCodes.size.toString() +
+                        " códigos POWER/OFF de esta marca. El barrido no enviará volumen, entradas ni otros botones.",
+                    12f,
+                    IOS_SECONDARY
+                ),
+                spacedMatch(10)
+            )
+
+            val paceControl = segmentedControl(
+                ScanPace.entries.map { it.title },
+                selectedPace.ordinal
+            ) { index ->
+                if (!scanner.isRunning()) selectedPace = ScanPace.entries[index]
+            }
+            sweepCard.addView(paceControl, spacedMatch(10))
+
+            val progress = ProgressBar(
+                this,
+                null,
+                android.R.attr.progressBarStyleHorizontal
+            ).apply {
+                max = 1000
+                progress = 0
+                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            }
+            val count = bodyText(
+                "0 / " + powerCodes.size,
+                12f,
+                IOS_SECONDARY
+            )
+            val current = bodyText("Listo", 14f, Color.WHITE, Typeface.BOLD)
+            val frequency = bodyText("", 12f, IOS_SECONDARY)
+            val status = infoText(
+                "Puedes dejar que avance automáticamente o pausarlo para ir uno a uno."
+            ).apply { setPadding(0, dp(4), 0, dp(8)) }
+
+            sweepCard.addView(progress, spacedMatch(6))
+            sweepCard.addView(count, spacedMatch(4))
+            sweepCard.addView(current, spacedMatch(2))
+            sweepCard.addView(frequency, spacedMatch(6))
+            sweepCard.addView(status, spacedMatch(8))
+
+            val start = primaryButton("▶  BARRER ESTA MARCA")
+            sweepCard.addView(start, spacedMatch(10))
+
+            val controls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            val previous = outlineButton("◀|")
+            val pause = outlineButton("Ⅱ")
+            val next = outlineButton("|▶")
+            controls.addView(previous, weighted())
+            controls.addView(space(dp(8)))
+            controls.addView(pause, weighted())
+            controls.addView(space(dp(8)))
+            controls.addView(next, weighted())
+            sweepCard.addView(controls, spacedMatch(10))
+
+            val worked = tintedButton("✓  FUNCIONÓ", IOS_GREEN)
+            sweepCard.addView(worked)
+
+            fun setRunningUi(running: Boolean) {
+                start.text = if (running) "■  DETENER BARRIDO" else "▶  BARRER ESTA MARCA"
+                pause.text = if (scanner.isPaused()) "▶" else "Ⅱ"
+                for (i in 0 until paceControl.childCount) {
+                    paceControl.getChildAt(i).isEnabled = !running
+                    paceControl.getChildAt(i).alpha = if (running) 0.55f else 1f
+                }
+            }
+
+            start.setOnClickListener {
+                if (scanner.isRunning()) {
+                    scanner.stop()
+                    setRunningUi(false)
+                    status.text = "Barrido de " + brand + " detenido."
+                    return@setOnClickListener
+                }
+
+                val active = transmitter.active()
+                if (!active.isAvailable()) {
+                    status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                    return@setOnClickListener
+                }
+
+                progress.progress = 0
+                count.text = "0 / " + powerCodes.size
+                current.text = "Iniciando " + brand + "…"
+                frequency.text = ""
+                status.text =
+                    "Probando " + powerCodes.size + " códigos POWER/OFF mediante " + active.name
+                setRunningUi(true)
+
+                scanner.start(powerCodes, selectedPace) { p ->
+                    runOnUiThread {
+                        if (!isScreenActive(screen)) return@runOnUiThread
+
+                        progress.progress =
+                            if (p.total == 0) 0 else (p.index * 1000 / p.total)
+                        count.text = p.index.toString() + " / " + p.total
+                        current.text = p.code?.displayName ?: "Barrido terminado"
+                        frequency.text = p.code?.let {
+                            it.effectiveCarrierHz.toString() + " Hz"
+                        }.orEmpty()
+                        pause.text = if (p.paused) "▶" else "Ⅱ"
+
+                        status.text = when {
+                            p.code == null -> {
+                                setRunningUi(false)
+                                "Barrido de " + brand + " terminado."
+                            }
+                            p.error != null ->
+                                "Código " + p.index + "/" + p.total + " · " + p.error
+                            p.paused ->
+                                "Pausado en " + p.code.displayName + ". Usa anterior/siguiente para ir uno a uno."
+                            else ->
+                                "Código " + p.index + "/" + p.total + " · " + p.code.displayName
+                        }
+                    }
+                }
+            }
+
+            pause.setOnClickListener {
+                if (!scanner.isRunning()) return@setOnClickListener
+                if (scanner.isPaused()) {
+                    scanner.resume()
+                    pause.text = "Ⅱ"
+                    status.text = "Barrido de " + brand + " reanudado."
+                } else {
+                    scanner.pause()
+                    pause.text = "▶"
+                    status.text =
+                        "Barrido pausado. Usa anterior/siguiente para recorrer la marca manualmente."
+                }
+            }
+
+            previous.setOnClickListener {
+                if (!scanner.isRunning()) return@setOnClickListener
+                pause.text = "▶"
+                status.text = "Modo manual · código anterior de " + brand + "…"
+                scanner.step(-1)
+            }
+
+            next.setOnClickListener {
+                if (!scanner.isRunning()) return@setOnClickListener
+                pause.text = "▶"
+                status.text = "Modo manual · código siguiente de " + brand + "…"
+                scanner.step(1)
+            }
+
+            worked.setOnClickListener {
+                val candidates = scanner.candidates()
+                if (candidates.isEmpty()) {
+                    toast("Todavía no hay candidatos recientes de " + brand + ".")
+                    return@setOnClickListener
+                }
+
+                scanner.pause()
+                pause.text = "▶"
+                showCodeChooser(
+                    "¿Qué código de " + brand + " funcionó?",
+                    candidates
+                ) { code ->
+                    store.addWorked(selectedCategory, code)
+                    saveDeviceDialog(
+                        selectedCategory,
+                        code,
+                        suggested = brand + " · " + code.displayName
+                    )
+                }
+            }
+
+            browserContainer.addView(sweepCard, spacedMatch(12))
+        }
+
         fun renderBrowser() {
             browserContainer.removeAllViews()
             selectionHost.removeAllViews()
@@ -607,6 +802,10 @@ class MainActivity : Activity() {
                 return
             }
 
+            if (selectedBrand.isNotBlank()) {
+                addBrandSweep(selectedBrand)
+            }
+
             if (!listMode) {
                 val brandWheel = NumberPicker(this).apply {
                     minValue = 0
@@ -616,6 +815,7 @@ class MainActivity : Activity() {
                     value = if (selectedBrand.isBlank()) 0 else
                         (brands.indexOfFirst { it.equals(selectedBrand, true) } + 1).coerceAtLeast(0)
                     setOnValueChangedListener { _, _, newValue ->
+                        stopBrandScanForNavigation()
                         selectedBrand = if (newValue == 0) "" else brands[newValue - 1]
                         renderBrowser()
                     }
@@ -662,6 +862,7 @@ class MainActivity : Activity() {
                     background = if (letter == selectedLetter)
                         roundedDrawable(IOS_RED, 8) else roundedDrawable(Color.TRANSPARENT, 8)
                     setOnClickListener {
+                        stopBrandScanForNavigation()
                         selectedLetter = letter
                         selectedBrand = ""
                         renderBrowser()
@@ -687,12 +888,14 @@ class MainActivity : Activity() {
                     it.trim().firstOrNull()?.uppercaseChar()?.toString() == selectedLetter
                 }.forEach { brand ->
                     rows.addView(browserRow(brand, "›") {
+                        stopBrandScanForNavigation()
                         selectedBrand = brand
                         renderBrowser()
                     })
                 }
             } else {
                 rows.addView(browserRow("‹  Marcas", "") {
+                    stopBrandScanForNavigation()
                     selectedBrand = ""
                     renderBrowser()
                 })
@@ -712,10 +915,12 @@ class MainActivity : Activity() {
 
         sourceControl.setOnClickListener(null)
         search.addTextChangedListener(simpleTextWatcher {
+            stopBrandScanForNavigation()
             selectedBrand = ""
             renderBrowser()
         })
         wireSegmentCallback(sourceControl) { index ->
+            stopBrandScanForNavigation()
             sourceIndex = index
             selectedBrand = ""
             renderBrowser()
