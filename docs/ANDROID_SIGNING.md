@@ -29,6 +29,9 @@ El script:
   - `ANDROID_SIGNING_KEY_ALIAS`
   - `ANDROID_SIGNING_KEY_PASSWORD`
 
+La keystore es PKCS#12 y usa la misma contraseña para el almacén y la clave,
+evitando diferencias de comportamiento entre versiones de `keytool`/JDK.
+
 La keystore y sus contraseñas **no deben subirse al repositorio**.
 
 Haz al menos una copia privada y segura de la keystore. Si se pierde la clave,

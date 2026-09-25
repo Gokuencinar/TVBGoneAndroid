@@ -29,11 +29,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "GitHub CLI no está autenticado. Ejecuta 'gh auth login' y repite."
 }
 
-$storePassword = Read-Secret "Contraseña nueva para la keystore"
-$keyPassword = Read-Secret "Contraseña nueva para la clave (puede ser la misma)"
-if ([string]::IsNullOrWhiteSpace($storePassword) -or [string]::IsNullOrWhiteSpace($keyPassword)) {
-    throw "Las contraseñas no pueden estar vacías."
+$storePassword = Read-Secret "Contraseña nueva para la keystore y la clave"
+if ([string]::IsNullOrWhiteSpace($storePassword)) {
+    throw "La contraseña no puede estar vacía."
 }
+$keyPassword = $storePassword
 
 $outDir = Join-Path $PSScriptRoot ".signing-private"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -64,13 +64,18 @@ if ($LASTEXITCODE -ne 0) {
 $base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($keystore))
 
 Write-Host "Subiendo secretos a GitHub Actions..."
-$base64 | gh secret set ANDROID_SIGNING_KEYSTORE_BASE64 --repo $Repository
-$storePassword | gh secret set ANDROID_SIGNING_STORE_PASSWORD --repo $Repository
-$Alias | gh secret set ANDROID_SIGNING_KEY_ALIAS --repo $Repository
-$keyPassword | gh secret set ANDROID_SIGNING_KEY_PASSWORD --repo $Repository
+$secrets = [ordered]@{
+    ANDROID_SIGNING_KEYSTORE_BASE64 = $base64
+    ANDROID_SIGNING_STORE_PASSWORD = $storePassword
+    ANDROID_SIGNING_KEY_ALIAS = $Alias
+    ANDROID_SIGNING_KEY_PASSWORD = $keyPassword
+}
 
-if ($LASTEXITCODE -ne 0) {
-    throw "No se pudieron guardar todos los secretos en GitHub."
+foreach ($entry in $secrets.GetEnumerator()) {
+    $entry.Value | gh secret set $entry.Key --repo $Repository
+    if ($LASTEXITCODE -ne 0) {
+        throw "No se pudo guardar el secreto $($entry.Key) en GitHub."
+    }
 }
 
 Write-Host ""
