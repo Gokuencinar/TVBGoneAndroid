@@ -1764,8 +1764,13 @@ class MainActivity : Activity() {
             ),
             spacedMatch(10)
         )
-        val project = outlineButton("VER PROYECTO EN GITHUB")
-        credits.addView(project)
+        val creditActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val project = outlineButton("GITHUB")
+        val licenses = outlineButton("LICENCIAS")
+        creditActions.addView(project, weighted())
+        creditActions.addView(space(dp(10)))
+        creditActions.addView(licenses, weighted())
+        credits.addView(creditActions)
         project.setOnClickListener {
             startActivity(
                 Intent(
@@ -1773,6 +1778,16 @@ class MainActivity : Activity() {
                     Uri.parse("https://github.com/Gokuencinar/TVBGoneAndroid")
                 )
             )
+        }
+        licenses.setOnClickListener {
+            val notice = resources.openRawResource(R.raw.third_party_notices)
+                .bufferedReader()
+                .use { it.readText() }
+            AlertDialog.Builder(this)
+                .setTitle("Licencias de terceros")
+                .setMessage(notice)
+                .setPositiveButton("Cerrar", null)
+                .show()
         }
         body.addView(credits, spacedMatch(20))
     }
