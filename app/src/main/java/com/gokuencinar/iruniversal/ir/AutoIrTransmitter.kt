@@ -14,6 +14,12 @@ class AutoIrTransmitter(context: Context) {
         TransmitterMode.AUDIO -> audio
     }
 
+    var audioTransmissionMode: AudioTransmissionMode
+        get() = audio.transmissionMode
+        set(value) {
+            audio.transmissionMode = value
+        }
+
     fun isNativeAvailable(): Boolean = native.isAvailable()
     fun diagnostics(): String = native.diagnostics() + "\n" + audio.diagnostics()
 }

@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
@@ -25,7 +26,11 @@ import com.gokuencinar.iruniversal.learn.IrSignalAnalyzer
 import com.gokuencinar.iruniversal.online.OnlineIrLibrary
 import com.gokuencinar.iruniversal.online.OnlineIrRemote
 import com.gokuencinar.iruniversal.storage.AppStore
+import com.gokuencinar.iruniversal.storage.CustomRemote
+import com.gokuencinar.iruniversal.storage.CustomRemoteButton
 import com.gokuencinar.iruniversal.storage.SavedDevice
+import com.gokuencinar.iruniversal.update.AppRelease
+import com.gokuencinar.iruniversal.update.AppUpdater
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -47,12 +52,15 @@ class MainActivity : Activity() {
     private var selectedRegion = TvRegion.EUROPE
     private var selectedPace = ScanPace.FAST
     private var selectedLearnCarrierIndex = 0
+    private var guidedLearning = false
+    private var guidedIndex = 0
     private var currentTab = 0
     private val bottomTabViews = mutableListOf<LinearLayout>()
 
     companion object {
         private const val REQUEST_MIC = 1001
         private const val REQUEST_IMPORT_IR = 1002
+        private const val REQUEST_RESTORE_BACKUP = 1003
         private const val PREF_BROWSER_MODE = "irUniversal.localBrowserPresentation"
         private const val PREF_ONLINE_BROWSER_MODE = "irUniversal.onlineBrowserPresentation"
         private const val PREF_OLED_MODE = "irUniversal.oledMode"
@@ -368,6 +376,7 @@ class MainActivity : Activity() {
                     }
                     currentCode.text = p.code?.displayName ?: "Barrido terminado"
                     carrierText.text = p.code?.let { it.effectiveCarrierHz.toString() + " Hz" }.orEmpty()
+                    pause.text = if (p.paused) "▶" else "Ⅱ"
                     status.text = when {
                         p.code == null -> {
                             activeCard.visibility = View.GONE
@@ -395,8 +404,18 @@ class MainActivity : Activity() {
                 status.text = "Barrido pausado."
             }
         }
-        previous.setOnClickListener { scanner.step(-1) }
-        next.setOnClickListener { scanner.step(1) }
+        previous.setOnClickListener {
+            if (!scanner.isRunning()) return@setOnClickListener
+            pause.text = "▶"
+            status.text = "Modo manual · enviando el código anterior…"
+            scanner.step(-1)
+        }
+        next.setOnClickListener {
+            if (!scanner.isRunning()) return@setOnClickListener
+            pause.text = "▶"
+            status.text = "Modo manual · enviando el código siguiente…"
+            scanner.step(1)
+        }
 
         worked.setOnClickListener {
             val candidates = scanner.candidates()
@@ -1023,12 +1042,51 @@ class MainActivity : Activity() {
             text = "Aprendizaje guiado"
             setTextColor(Color.WHITE)
             buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            isChecked = guidedLearning
         }
         studioTools.addView(guided)
         body.addView(studioTools, spacedMatch(14))
         importButton.setOnClickListener { openIrFilePicker() }
         remoteButton.setOnClickListener {
-            toast("Selecciona señales aprendidas desde Mis equipos para crear accesos rápidos.")
+            showRemoteBuilderDialog(selectedCategory)
+        }
+        guided.setOnCheckedChangeListener { _, enabled ->
+            guidedLearning = enabled
+            guidedIndex = 0
+            if (isScreenActive(screen)) showLearn()
+        }
+
+        if (guidedLearning) {
+            val buttons = guidedButtonNames(selectedCategory)
+            val safeIndex = guidedIndex.coerceIn(0, (buttons.size - 1).coerceAtLeast(0))
+            val guidedCard = card(18)
+            guidedCard.addView(
+                bodyText("≡  Aprendizaje guiado", 16f, Color.WHITE, Typeface.BOLD),
+                spacedMatch(8)
+            )
+            guidedCard.addView(
+                bodyText(
+                    "Botón " + (safeIndex + 1) + " de " + buttons.size,
+                    12f,
+                    IOS_SECONDARY
+                ),
+                spacedMatch(5)
+            )
+            guidedCard.addView(
+                bodyText(buttons.getOrElse(safeIndex) { "Power" }, 19f, Color.WHITE, Typeface.BOLD),
+                spacedMatch(8)
+            )
+            val guidedProgress = ProgressBar(
+                this,
+                null,
+                android.R.attr.progressBarStyleHorizontal
+            ).apply {
+                max = buttons.size.coerceAtLeast(1)
+                progress = safeIndex
+                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            }
+            guidedCard.addView(guidedProgress, matchWrap())
+            body.addView(guidedCard, spacedMatch(14))
         }
 
         val inputInfo = learner.inspectInput()
@@ -1114,8 +1172,32 @@ class MainActivity : Activity() {
                 13f,
                 IOS_SECONDARY
             ), spacedMatch(10))
-            val signalName = oledInput("Nombre del botón").apply { setText("Power") }
-            resultCard.addView(signalName, spacedMatch(10))
+            val signalName = oledInput("Nombre del botón").apply {
+                val suggested = if (guidedLearning) {
+                    guidedButtonNames(selectedCategory)
+                        .getOrElse(guidedIndex) { "Power" }
+                } else {
+                    "Power"
+                }
+                setText(suggested)
+                selectAll()
+            }
+            resultCard.addView(signalName, spacedMatch(8))
+            if (guidedLearning) {
+                val quickName = outlineButton("✓  ELEGIR NOMBRE RÁPIDO")
+                resultCard.addView(quickName, spacedMatch(10))
+                quickName.setOnClickListener {
+                    val names = guidedButtonNames(selectedCategory)
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Nombre del botón")
+                        .setItems(names.toTypedArray()) { _, which ->
+                            signalName.setText(names[which])
+                            signalName.selectAll()
+                        }
+                        .setNegativeButton("Cancelar", null)
+                        .show()
+                }
+            }
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val test = primaryButton("⌁  PROBAR")
             val save = outlineButton("⇩  GUARDAR")
@@ -1128,12 +1210,16 @@ class MainActivity : Activity() {
             test.setOnClickListener { sendAsync(code, status, screen) }
             save.setOnClickListener {
                 val name = signalName.text.toString().trim().ifBlank { "Power" }
-                val storedCode = code.copy(id = "learned:" + name.replace(":", "_") + ":" + java.util.UUID.randomUUID())
+                val storedCode = code.copy(
+                    id = "learned:" + name.replace(":", "_") + ":" +
+                        selectedCategory.name + ":" + java.util.UUID.randomUUID()
+                )
                 val learned = store.loadLearned()
                 learned += storedCode
                 store.saveLearned(learned)
                 learnedCandidate = storedCode
                 toast("Guardado: " + name)
+                advanceGuidedLearning(selectedCategory)
                 if (isScreenActive(screen)) showLearn()
             }
         }
@@ -1219,6 +1305,7 @@ class MainActivity : Activity() {
         val screen = beginScreen()
         val body = installScreenBody("Mis equipos")
         val devices = store.loadDevices()
+        val remotes = store.loadRemotes()
         val history = store.loadWorked()
 
         val metrics = LinearLayout(this).apply {
@@ -1227,10 +1314,75 @@ class MainActivity : Activity() {
         }
         metrics.addView(metricCard(devices.size, "Equipos", "▣"), weighted())
         metrics.addView(space(dp(8)))
-        metrics.addView(metricCard(0, "Mandos", "▤"), weighted())
+        metrics.addView(metricCard(remotes.size, "Mandos", "▤"), weighted())
         metrics.addView(space(dp(8)))
         metrics.addView(metricCard(history.size, "Funcionaron", "✓"), weighted())
         body.addView(metrics, spacedMatch(20))
+
+        if (remotes.isNotEmpty()) {
+            body.addView(sectionHeader("▤  Mis mandos"))
+            val grid = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            remotes.chunked(2).forEach { rowRemotes ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.TOP
+                }
+                rowRemotes.forEachIndexed { index, remote ->
+                    val tile = card(18).apply {
+                        gravity = Gravity.CENTER
+                        addView(bodyText("▤", 28f, IOS_RED).apply {
+                            gravity = Gravity.CENTER
+                        }, spacedMatch(6))
+                        addView(bodyText(remote.name, 15f, Color.WHITE, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                            maxLines = 2
+                        }, spacedMatch(4))
+                        addView(bodyText(
+                            remote.buttons.size.toString() + " botones · " + remote.category.shortTitle,
+                            11f,
+                            IOS_SECONDARY
+                        ).apply { gravity = Gravity.CENTER })
+                        setOnClickListener {
+                            showCustomRemote(remote, screen)
+                        }
+                        setOnLongClickListener {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Eliminar mando")
+                                .setMessage("¿Eliminar " + remote.name + "?")
+                                .setPositiveButton("Eliminar") { _, _ ->
+                                    store.removeRemote(remote.id)
+                                    if (isScreenActive(screen)) showSavedDevices()
+                                }
+                                .setNegativeButton("Cancelar", null)
+                                .show()
+                            true
+                        }
+                    }
+                    row.addView(tile, LinearLayout.LayoutParams(
+                        0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        1f
+                    ).apply {
+                        if (index == 0 && rowRemotes.size > 1) {
+                            marginEnd = dp(6)
+                        } else if (index > 0) {
+                            marginStart = dp(6)
+                        }
+                    })
+                }
+                if (rowRemotes.size == 1) {
+                    row.addView(Space(this), LinearLayout.LayoutParams(
+                        0,
+                        1,
+                        1f
+                    ).apply { marginStart = dp(6) })
+                }
+                grid.addView(row, spacedMatch(12))
+            }
+            body.addView(grid, spacedMatch(10))
+        }
 
         if (devices.isNotEmpty()) {
             body.addView(sectionHeader("⚡  Acceso rápido"))
@@ -1333,7 +1485,7 @@ class MainActivity : Activity() {
             }
         }
 
-        if (devices.isEmpty() && history.isEmpty()) {
+        if (devices.isEmpty() && remotes.isEmpty() && history.isEmpty()) {
             body.addView(emptyState(
                 "Tu biblioteca está vacía",
                 "Cuando encuentres un código que funcione, aparecerá aquí para que puedas volver a usarlo en segundos."
@@ -1393,6 +1545,30 @@ class MainActivity : Activity() {
         sound.setOnClickListener { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
         body.addView(route, spacedMatch(14))
 
+        val transmissionCard = card(18)
+        transmissionCard.addView(
+            bodyText("Modo de transmisión", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        transmissionCard.addView(
+            segmentedControl(
+                AudioTransmissionMode.entries.map { it.title },
+                transmitter.audioTransmissionMode.ordinal
+            ) { index ->
+                transmitter.audioTransmissionMode = AudioTransmissionMode.entries[index]
+                if (isScreenActive(screen)) showDiagnostics()
+            },
+            spacedMatch(8)
+        )
+        transmissionCard.addView(
+            bodyText(
+                transmitter.audioTransmissionMode.detail,
+                12f,
+                IOS_SECONDARY
+            )
+        )
+        body.addView(transmissionCard, spacedMatch(14))
+
         val carrierCard = card(18)
         carrierCard.addView(bodyText("Prueba de portadora", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         carrierCard.addView(bodyText(
@@ -1401,10 +1577,10 @@ class MainActivity : Activity() {
             IOS_SECONDARY
         ), spacedMatch(10))
         val tests = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(36_000, 38_000, 40_000).forEachIndexed { index, hz ->
+        listOf(36_000, 37_000, 38_000, 39_000, 40_000).forEachIndexed { index, hz ->
             val button = outlineButton((hz / 1000).toString() + " kHz")
             tests.addView(button, weighted())
-            if (index < 2) tests.addView(space(dp(8)))
+            if (index < 4) tests.addView(space(dp(6)))
             button.setOnClickListener {
                 val status = screenStatusText("Probando " + hz / 1000 + " kHz…")
                 sendTestCarrier(hz, status)
@@ -1471,12 +1647,17 @@ class MainActivity : Activity() {
         val backup = card(18)
         backup.addView(bodyText("Copia de seguridad", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         backup.addView(bodyText(
-            "Exporta tus equipos, señales aprendidas e historial a un JSON para conservarlos fuera de la app.",
+            "Guarda en un único archivo tus equipos, señales aprendidas, mandos y códigos que funcionaron.",
             12f,
             IOS_SECONDARY
         ), spacedMatch(10))
-        val export = outlineButton("↑  EXPORTAR JSON")
-        backup.addView(export)
+        val backupActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val export = outlineButton("↑  EXPORTAR")
+        val restore = outlineButton("↓  RESTAURAR")
+        backupActions.addView(export, weighted())
+        backupActions.addView(space(dp(10)))
+        backupActions.addView(restore, weighted())
+        backup.addView(backupActions)
         export.setOnClickListener {
             val share = Intent(Intent.ACTION_SEND).apply {
                 type = "application/json"
@@ -1484,7 +1665,203 @@ class MainActivity : Activity() {
             }
             startActivity(Intent.createChooser(share, "Exportar copia de seguridad"))
         }
-        body.addView(backup, spacedMatch(20))
+        restore.setOnClickListener { openBackupPicker() }
+        body.addView(backup, spacedMatch(14))
+
+        val updater = AppUpdater(this)
+        var pendingRelease: AppRelease? = null
+        val updates = card(18)
+        updates.addView(
+            bodyText("↻  Actualizaciones", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        updates.addView(
+            bodyText(
+                "Instalada: " + updater.currentVersion + " (" + updater.currentBuild + ")",
+                13f,
+                IOS_SECONDARY
+            ),
+            spacedMatch(6)
+        )
+        val availableVersion = bodyText("", 13f, IOS_GREEN, Typeface.BOLD).apply {
+            visibility = View.GONE
+        }
+        val updateStatus = infoText(
+            "Comprueba GitHub Releases para saber si hay una APK más reciente."
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        val checkUpdate = outlineButton("↻  BUSCAR ACTUALIZACIÓN")
+        val downloadUpdate = primaryButton("↓  DESCARGAR ACTUALIZACIÓN").apply {
+            visibility = View.GONE
+        }
+        updates.addView(availableVersion, spacedMatch(6))
+        updates.addView(updateStatus, spacedMatch(8))
+        updates.addView(checkUpdate, spacedMatch(8))
+        updates.addView(downloadUpdate)
+        body.addView(updates, spacedMatch(14))
+
+        checkUpdate.setOnClickListener {
+            checkUpdate.isEnabled = false
+            checkUpdate.text = "COMPROBANDO…"
+            updateStatus.text = "Buscando actualizaciones en GitHub…"
+            worker.execute {
+                val result = updater.checkForUpdates()
+                runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    checkUpdate.isEnabled = true
+                    checkUpdate.text = "↻  BUSCAR ACTUALIZACIÓN"
+                    updateStatus.text = result.message
+                    pendingRelease = result.release
+                    if (result.updateAvailable && result.release != null) {
+                        availableVersion.text =
+                            "Disponible: " + updater.releaseLabel(result.release)
+                        availableVersion.visibility = View.VISIBLE
+                        downloadUpdate.visibility = View.VISIBLE
+                    } else {
+                        availableVersion.visibility = View.GONE
+                        downloadUpdate.visibility = View.GONE
+                    }
+                }
+            }
+        }
+
+        downloadUpdate.setOnClickListener {
+            val release = pendingRelease ?: return@setOnClickListener
+            updater.openDownload(release)
+        }
+
+        val credits = card(18)
+        credits.addView(
+            bodyText("★  Créditos", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        credits.addView(
+            bodyText("Gokuencinar", 17f, IOS_RED, Typeface.BOLD),
+            spacedMatch(4)
+        )
+        credits.addView(
+            bodyText(
+                "Creador y desarrollador de TVBGoneAudio y TVBGoneAndroid.",
+                13f,
+                Color.LTGRAY
+            ),
+            spacedMatch(8)
+        )
+        credits.addView(
+            bodyText(
+                "Versión Android basada funcional y visualmente en TVBGoneAudio. " +
+                    "Incluye códigos TV-B-Gone y datos compatibles de Flipper-IRDB.",
+                12f,
+                IOS_SECONDARY
+            ),
+            spacedMatch(10)
+        )
+        val project = outlineButton("VER PROYECTO EN GITHUB")
+        credits.addView(project)
+        project.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Gokuencinar/TVBGoneAndroid")
+                )
+            )
+        }
+        body.addView(credits, spacedMatch(20))
+    }
+
+    private fun showRemoteBuilderDialog(category: DeviceCategory) {
+        val learned = store.loadLearned().filter {
+            learnedCategory(it)?.let { value -> value == category } ?: true
+        }
+        if (learned.isEmpty()) {
+            toast("Primero aprende o importa algún botón de esta categoría.")
+            return
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(6), dp(18), 0)
+        }
+        val name = oledInput("Nombre").apply {
+            setText("Mi mando")
+            selectAll()
+        }
+        container.addView(name, spacedMatch(12))
+
+        val list = ListView(this).apply {
+            choiceMode = ListView.CHOICE_MODE_MULTIPLE
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_list_item_multiple_choice,
+                learned.map(::learnedName)
+            )
+        }
+        container.addView(list, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(300)
+        ))
+
+        AlertDialog.Builder(this)
+            .setTitle("Nuevo mando")
+            .setView(container)
+            .setPositiveButton("Crear mando") { _, _ ->
+                val buttons = learned.indices
+                    .filter { list.isItemChecked(it) }
+                    .map { index ->
+                        CustomRemoteButton(
+                            name = learnedName(learned[index]),
+                            code = learned[index]
+                        )
+                    }
+                if (buttons.isEmpty()) {
+                    toast("Selecciona al menos un botón.")
+                } else {
+                    val remote = CustomRemote(
+                        name = name.text.toString().trim().ifBlank { "Mi mando" },
+                        category = category,
+                        buttons = buttons
+                    )
+                    store.addRemote(remote)
+                    toast("Mando creado: " + remote.name)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showCustomRemote(remote: CustomRemote, screen: Long) {
+        val names = remote.buttons.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(remote.name)
+            .setItems(names) { _, which ->
+                val button = remote.buttons.getOrNull(which) ?: return@setItems
+                sendAsync(
+                    button.code,
+                    screenStatusText("Enviando " + button.name + "…"),
+                    screen
+                )
+            }
+            .setNeutralButton("Compartir .ir") { _, _ ->
+                val text = FlipperIrCodec.exportRawRecords(
+                    remote.buttons.map { it.name to it.code }
+                )
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+                startActivity(Intent.createChooser(share, "Compartir mando"))
+            }
+            .setNegativeButton("Cerrar", null)
+            .show()
+    }
+
+    private fun openBackupPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain"))
+        }
+        startActivityForResult(intent, REQUEST_RESTORE_BACKUP)
     }
 
     private fun sendTestCarrier(hz: Int, status: TextView) {
@@ -1582,7 +1959,9 @@ class MainActivity : Activity() {
     @Deprecated("Legacy Activity result is used deliberately to keep the project dependency-free.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_IMPORT_IR || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
+        if (requestCode != REQUEST_IMPORT_IR && requestCode != REQUEST_RESTORE_BACKUP) return
+
         val uri = data?.data ?: return
         val text = runCatching {
             contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
@@ -1593,19 +1972,51 @@ class MainActivity : Activity() {
             return
         }
 
-        importedSignals = FlipperIrCodec.parse(text)
-        if (importedSignals.isEmpty()) {
-            toast("El archivo no contiene señales Flipper compatibles.")
-        } else {
-            val learned = store.loadLearned()
-            importedSignals.forEach { signal ->
-                learned += signal.code.copy(
-                    id = "learned:" + signal.name.replace(":", "_") + ":" + java.util.UUID.randomUUID()
-                )
+        when (requestCode) {
+            REQUEST_IMPORT_IR -> {
+                importedSignals = FlipperIrCodec.parse(text)
+                if (importedSignals.isEmpty()) {
+                    toast("El archivo no contiene señales Flipper compatibles.")
+                } else {
+                    val learned = store.loadLearned()
+                    importedSignals.forEach { signal ->
+                        learned += signal.code.copy(
+                            id = "learned:" + signal.name.replace(":", "_") + ":" +
+                                selectedCategory.name + ":" + java.util.UUID.randomUUID()
+                        )
+                    }
+                    store.saveLearned(learned)
+                    toast("Importadas " + importedSignals.size + " señal(es).")
+                    if (currentTab == 3) showLearn()
+                }
             }
-            store.saveLearned(learned)
-            toast("Importadas " + importedSignals.size + " señal(es).")
-            if (currentTab == 3) showLearn()
+
+            REQUEST_RESTORE_BACKUP -> {
+                AlertDialog.Builder(this)
+                    .setTitle("Restaurar copia")
+                    .setMessage(
+                        "Se sustituirá la biblioteca actual de equipos, mandos, señales " +
+                            "aprendidas e historial. ¿Continuar?"
+                    )
+                    .setPositiveButton("Restaurar") { _, _ ->
+                        runCatching { store.restoreBackup(text) }
+                            .onSuccess { summary ->
+                                toast(
+                                    "Copia restaurada: " +
+                                        summary.devices + " equipos · " +
+                                        summary.remotes + " mandos · " +
+                                        summary.learned + " señales · " +
+                                        summary.worked + " aciertos"
+                                )
+                                selectTab(currentTab)
+                            }
+                            .onFailure {
+                                toast("Copia no válida: " + (it.message ?: "desconocido"))
+                            }
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
         }
     }
 
@@ -2037,6 +2448,38 @@ class MainActivity : Activity() {
             value.contains("sirc") || value.contains("sony") || value.contains("pioneer") -> 40_000
             else -> 38_000
         }
+    }
+
+    private fun guidedButtonNames(category: DeviceCategory): List<String> = when (category) {
+        DeviceCategory.TELEVISION -> listOf(
+            "Power", "Vol +", "Vol -", "Mute", "Channel +", "Channel -",
+            "Input", "Menu", "OK", "Arriba", "Abajo", "Izquierda", "Derecha", "Back"
+        )
+        DeviceCategory.AIR_CONDITIONER -> listOf(
+            "Power", "Temp +", "Temp -", "Mode", "Fan", "Swing", "Cool", "Heat", "Auto"
+        )
+        DeviceCategory.PROJECTOR -> listOf(
+            "Power", "Source", "Menu", "OK", "Arriba", "Abajo",
+            "Izquierda", "Derecha", "Back", "Mute", "Freeze"
+        )
+    }
+
+    private fun advanceGuidedLearning(category: DeviceCategory) {
+        if (!guidedLearning) return
+        val buttons = guidedButtonNames(category)
+        if (guidedIndex + 1 < buttons.size) {
+            guidedIndex += 1
+        } else {
+            guidedLearning = false
+            guidedIndex = 0
+        }
+    }
+
+    private fun learnedCategory(code: IrCode): DeviceCategory? {
+        if (!code.id.startsWith("learned:")) return null
+        val parts = code.id.split(":")
+        if (parts.size < 4) return null
+        return runCatching { DeviceCategory.valueOf(parts[2]) }.getOrNull()
     }
 
     private fun learnedName(code: IrCode): String {
