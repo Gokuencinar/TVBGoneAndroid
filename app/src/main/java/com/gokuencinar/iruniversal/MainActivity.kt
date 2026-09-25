@@ -26,6 +26,8 @@ import com.gokuencinar.iruniversal.learn.IrSignalAnalyzer
 import com.gokuencinar.iruniversal.online.OnlineIrLibrary
 import com.gokuencinar.iruniversal.online.OnlineIrRemote
 import com.gokuencinar.iruniversal.storage.AppStore
+import com.gokuencinar.iruniversal.storage.CustomRemote
+import com.gokuencinar.iruniversal.storage.CustomRemoteButton
 import com.gokuencinar.iruniversal.storage.SavedDevice
 import com.gokuencinar.iruniversal.update.AppRelease
 import com.gokuencinar.iruniversal.update.AppUpdater
@@ -56,6 +58,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_MIC = 1001
         private const val REQUEST_IMPORT_IR = 1002
+        private const val REQUEST_RESTORE_BACKUP = 1003
         private const val PREF_BROWSER_MODE = "irUniversal.localBrowserPresentation"
         private const val PREF_ONLINE_BROWSER_MODE = "irUniversal.onlineBrowserPresentation"
         private const val PREF_OLED_MODE = "irUniversal.oledMode"
@@ -1042,7 +1045,7 @@ class MainActivity : Activity() {
         body.addView(studioTools, spacedMatch(14))
         importButton.setOnClickListener { openIrFilePicker() }
         remoteButton.setOnClickListener {
-            toast("Selecciona señales aprendidas desde Mis equipos para crear accesos rápidos.")
+            showRemoteBuilderDialog(selectedCategory)
         }
 
         val inputInfo = learner.inspectInput()
@@ -1233,6 +1236,7 @@ class MainActivity : Activity() {
         val screen = beginScreen()
         val body = installScreenBody("Mis equipos")
         val devices = store.loadDevices()
+        val remotes = store.loadRemotes()
         val history = store.loadWorked()
 
         val metrics = LinearLayout(this).apply {
@@ -1241,10 +1245,75 @@ class MainActivity : Activity() {
         }
         metrics.addView(metricCard(devices.size, "Equipos", "▣"), weighted())
         metrics.addView(space(dp(8)))
-        metrics.addView(metricCard(0, "Mandos", "▤"), weighted())
+        metrics.addView(metricCard(remotes.size, "Mandos", "▤"), weighted())
         metrics.addView(space(dp(8)))
         metrics.addView(metricCard(history.size, "Funcionaron", "✓"), weighted())
         body.addView(metrics, spacedMatch(20))
+
+        if (remotes.isNotEmpty()) {
+            body.addView(sectionHeader("▤  Mis mandos"))
+            val grid = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            remotes.chunked(2).forEach { rowRemotes ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.TOP
+                }
+                rowRemotes.forEachIndexed { index, remote ->
+                    val tile = card(18).apply {
+                        gravity = Gravity.CENTER
+                        addView(bodyText("▤", 28f, IOS_RED).apply {
+                            gravity = Gravity.CENTER
+                        }, spacedMatch(6))
+                        addView(bodyText(remote.name, 15f, Color.WHITE, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                            maxLines = 2
+                        }, spacedMatch(4))
+                        addView(bodyText(
+                            remote.buttons.size.toString() + " botones · " + remote.category.shortTitle,
+                            11f,
+                            IOS_SECONDARY
+                        ).apply { gravity = Gravity.CENTER })
+                        setOnClickListener {
+                            showCustomRemote(remote, screen)
+                        }
+                        setOnLongClickListener {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Eliminar mando")
+                                .setMessage("¿Eliminar " + remote.name + "?")
+                                .setPositiveButton("Eliminar") { _, _ ->
+                                    store.removeRemote(remote.id)
+                                    if (isScreenActive(screen)) showSavedDevices()
+                                }
+                                .setNegativeButton("Cancelar", null)
+                                .show()
+                            true
+                        }
+                    }
+                    row.addView(tile, LinearLayout.LayoutParams(
+                        0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        1f
+                    ).apply {
+                        if (index == 0 && rowRemotes.size > 1) {
+                            marginEnd = dp(6)
+                        } else if (index > 0) {
+                            marginStart = dp(6)
+                        }
+                    })
+                }
+                if (rowRemotes.size == 1) {
+                    row.addView(Space(this), LinearLayout.LayoutParams(
+                        0,
+                        1,
+                        1f
+                    ).apply { marginStart = dp(6) })
+                }
+                grid.addView(row, spacedMatch(12))
+            }
+            body.addView(grid, spacedMatch(10))
+        }
 
         if (devices.isNotEmpty()) {
             body.addView(sectionHeader("⚡  Acceso rápido"))
@@ -1347,7 +1416,7 @@ class MainActivity : Activity() {
             }
         }
 
-        if (devices.isEmpty() && history.isEmpty()) {
+        if (devices.isEmpty() && remotes.isEmpty() && history.isEmpty()) {
             body.addView(emptyState(
                 "Tu biblioteca está vacía",
                 "Cuando encuentres un código que funcione, aparecerá aquí para que puedas volver a usarlo en segundos."
@@ -1485,12 +1554,17 @@ class MainActivity : Activity() {
         val backup = card(18)
         backup.addView(bodyText("Copia de seguridad", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         backup.addView(bodyText(
-            "Exporta tus equipos, señales aprendidas e historial a un JSON para conservarlos fuera de la app.",
+            "Guarda en un único archivo tus equipos, señales aprendidas, mandos y códigos que funcionaron.",
             12f,
             IOS_SECONDARY
         ), spacedMatch(10))
-        val export = outlineButton("↑  EXPORTAR JSON")
-        backup.addView(export)
+        val backupActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val export = outlineButton("↑  EXPORTAR")
+        val restore = outlineButton("↓  RESTAURAR")
+        backupActions.addView(export, weighted())
+        backupActions.addView(space(dp(10)))
+        backupActions.addView(restore, weighted())
+        backup.addView(backupActions)
         export.setOnClickListener {
             val share = Intent(Intent.ACTION_SEND).apply {
                 type = "application/json"
@@ -1498,6 +1572,7 @@ class MainActivity : Activity() {
             }
             startActivity(Intent.createChooser(share, "Exportar copia de seguridad"))
         }
+        restore.setOnClickListener { openBackupPicker() }
         body.addView(backup, spacedMatch(14))
 
         val updater = AppUpdater(this)
@@ -1600,6 +1675,100 @@ class MainActivity : Activity() {
         body.addView(credits, spacedMatch(20))
     }
 
+    private fun showRemoteBuilderDialog(category: DeviceCategory) {
+        val learned = store.loadLearned()
+        if (learned.isEmpty()) {
+            toast("Primero aprende o importa algún botón.")
+            return
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(6), dp(18), 0)
+        }
+        val name = oledInput("Nombre").apply {
+            setText("Mi mando")
+            selectAll()
+        }
+        container.addView(name, spacedMatch(12))
+
+        val list = ListView(this).apply {
+            choiceMode = ListView.CHOICE_MODE_MULTIPLE
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_list_item_multiple_choice,
+                learned.map(::learnedName)
+            )
+        }
+        container.addView(list, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(300)
+        ))
+
+        AlertDialog.Builder(this)
+            .setTitle("Nuevo mando")
+            .setView(container)
+            .setPositiveButton("Crear mando") { _, _ ->
+                val buttons = learned.indices
+                    .filter { list.isItemChecked(it) }
+                    .map { index ->
+                        CustomRemoteButton(
+                            name = learnedName(learned[index]),
+                            code = learned[index]
+                        )
+                    }
+                if (buttons.isEmpty()) {
+                    toast("Selecciona al menos un botón.")
+                } else {
+                    val remote = CustomRemote(
+                        name = name.text.toString().trim().ifBlank { "Mi mando" },
+                        category = category,
+                        buttons = buttons
+                    )
+                    store.addRemote(remote)
+                    toast("Mando creado: " + remote.name)
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showCustomRemote(remote: CustomRemote, screen: Long) {
+        val names = remote.buttons.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(remote.name)
+            .setItems(names) { _, which ->
+                val button = remote.buttons.getOrNull(which) ?: return@setItems
+                sendAsync(
+                    button.code,
+                    screenStatusText("Enviando " + button.name + "…"),
+                    screen
+                )
+            }
+            .setNeutralButton("Compartir .ir") { _, _ ->
+                val text = FlipperIrCodec.exportRawRecords(
+                    remote.buttons.map { it.name to it.code }
+                )
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+                startActivity(Intent.createChooser(share, "Compartir mando"))
+            }
+            .setNegativeButton("Cerrar", null)
+            .show()
+    }
+
+    private fun openBackupPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/json"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain"))
+        }
+        startActivityForResult(intent, REQUEST_RESTORE_BACKUP)
+    }
+
     private fun sendTestCarrier(hz: Int, status: TextView) {
         val code = IrCode("test-" + hz, hz, listOf(300_000, 50_000))
         sendAsync(code, status)
@@ -1695,7 +1864,9 @@ class MainActivity : Activity() {
     @Deprecated("Legacy Activity result is used deliberately to keep the project dependency-free.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_IMPORT_IR || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
+        if (requestCode != REQUEST_IMPORT_IR && requestCode != REQUEST_RESTORE_BACKUP) return
+
         val uri = data?.data ?: return
         val text = runCatching {
             contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
@@ -1706,19 +1877,51 @@ class MainActivity : Activity() {
             return
         }
 
-        importedSignals = FlipperIrCodec.parse(text)
-        if (importedSignals.isEmpty()) {
-            toast("El archivo no contiene señales Flipper compatibles.")
-        } else {
-            val learned = store.loadLearned()
-            importedSignals.forEach { signal ->
-                learned += signal.code.copy(
-                    id = "learned:" + signal.name.replace(":", "_") + ":" + java.util.UUID.randomUUID()
-                )
+        when (requestCode) {
+            REQUEST_IMPORT_IR -> {
+                importedSignals = FlipperIrCodec.parse(text)
+                if (importedSignals.isEmpty()) {
+                    toast("El archivo no contiene señales Flipper compatibles.")
+                } else {
+                    val learned = store.loadLearned()
+                    importedSignals.forEach { signal ->
+                        learned += signal.code.copy(
+                            id = "learned:" + signal.name.replace(":", "_") + ":" +
+                                java.util.UUID.randomUUID()
+                        )
+                    }
+                    store.saveLearned(learned)
+                    toast("Importadas " + importedSignals.size + " señal(es).")
+                    if (currentTab == 3) showLearn()
+                }
             }
-            store.saveLearned(learned)
-            toast("Importadas " + importedSignals.size + " señal(es).")
-            if (currentTab == 3) showLearn()
+
+            REQUEST_RESTORE_BACKUP -> {
+                AlertDialog.Builder(this)
+                    .setTitle("Restaurar copia")
+                    .setMessage(
+                        "Se sustituirá la biblioteca actual de equipos, mandos, señales " +
+                            "aprendidas e historial. ¿Continuar?"
+                    )
+                    .setPositiveButton("Restaurar") { _, _ ->
+                        runCatching { store.restoreBackup(text) }
+                            .onSuccess { summary ->
+                                toast(
+                                    "Copia restaurada: " +
+                                        summary.devices + " equipos · " +
+                                        summary.remotes + " mandos · " +
+                                        summary.learned + " señales · " +
+                                        summary.worked + " aciertos"
+                                )
+                                selectTab(currentTab)
+                            }
+                            .onFailure {
+                                toast("Copia no válida: " + (it.message ?: "desconocido"))
+                            }
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
         }
     }
 
