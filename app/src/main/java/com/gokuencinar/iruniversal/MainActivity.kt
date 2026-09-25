@@ -52,6 +52,8 @@ class MainActivity : Activity() {
     private var selectedRegion = TvRegion.EUROPE
     private var selectedPace = ScanPace.FAST
     private var selectedLearnCarrierIndex = 0
+    private var guidedLearning = false
+    private var guidedIndex = 0
     private var currentTab = 0
     private val bottomTabViews = mutableListOf<LinearLayout>()
 
@@ -1040,12 +1042,51 @@ class MainActivity : Activity() {
             text = "Aprendizaje guiado"
             setTextColor(Color.WHITE)
             buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            isChecked = guidedLearning
         }
         studioTools.addView(guided)
         body.addView(studioTools, spacedMatch(14))
         importButton.setOnClickListener { openIrFilePicker() }
         remoteButton.setOnClickListener {
             showRemoteBuilderDialog(selectedCategory)
+        }
+        guided.setOnCheckedChangeListener { _, enabled ->
+            guidedLearning = enabled
+            guidedIndex = 0
+            if (isScreenActive(screen)) showLearn()
+        }
+
+        if (guidedLearning) {
+            val buttons = guidedButtonNames(selectedCategory)
+            val safeIndex = guidedIndex.coerceIn(0, (buttons.size - 1).coerceAtLeast(0))
+            val guidedCard = card(18)
+            guidedCard.addView(
+                bodyText("≡  Aprendizaje guiado", 16f, Color.WHITE, Typeface.BOLD),
+                spacedMatch(8)
+            )
+            guidedCard.addView(
+                bodyText(
+                    "Botón " + (safeIndex + 1) + " de " + buttons.size,
+                    12f,
+                    IOS_SECONDARY
+                ),
+                spacedMatch(5)
+            )
+            guidedCard.addView(
+                bodyText(buttons.getOrElse(safeIndex) { "Power" }, 19f, Color.WHITE, Typeface.BOLD),
+                spacedMatch(8)
+            )
+            val guidedProgress = ProgressBar(
+                this,
+                null,
+                android.R.attr.progressBarStyleHorizontal
+            ).apply {
+                max = buttons.size.coerceAtLeast(1)
+                progress = safeIndex
+                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            }
+            guidedCard.addView(guidedProgress, matchWrap())
+            body.addView(guidedCard, spacedMatch(14))
         }
 
         val inputInfo = learner.inspectInput()
@@ -1131,8 +1172,32 @@ class MainActivity : Activity() {
                 13f,
                 IOS_SECONDARY
             ), spacedMatch(10))
-            val signalName = oledInput("Nombre del botón").apply { setText("Power") }
-            resultCard.addView(signalName, spacedMatch(10))
+            val signalName = oledInput("Nombre del botón").apply {
+                val suggested = if (guidedLearning) {
+                    guidedButtonNames(selectedCategory)
+                        .getOrElse(guidedIndex) { "Power" }
+                } else {
+                    "Power"
+                }
+                setText(suggested)
+                selectAll()
+            }
+            resultCard.addView(signalName, spacedMatch(8))
+            if (guidedLearning) {
+                val quickName = outlineButton("✓  ELEGIR NOMBRE RÁPIDO")
+                resultCard.addView(quickName, spacedMatch(10))
+                quickName.setOnClickListener {
+                    val names = guidedButtonNames(selectedCategory)
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Nombre del botón")
+                        .setItems(names.toTypedArray()) { _, which ->
+                            signalName.setText(names[which])
+                            signalName.selectAll()
+                        }
+                        .setNegativeButton("Cancelar", null)
+                        .show()
+                }
+            }
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             val test = primaryButton("⌁  PROBAR")
             val save = outlineButton("⇩  GUARDAR")
@@ -1145,12 +1210,16 @@ class MainActivity : Activity() {
             test.setOnClickListener { sendAsync(code, status, screen) }
             save.setOnClickListener {
                 val name = signalName.text.toString().trim().ifBlank { "Power" }
-                val storedCode = code.copy(id = "learned:" + name.replace(":", "_") + ":" + java.util.UUID.randomUUID())
+                val storedCode = code.copy(
+                    id = "learned:" + name.replace(":", "_") + ":" +
+                        selectedCategory.name + ":" + java.util.UUID.randomUUID()
+                )
                 val learned = store.loadLearned()
                 learned += storedCode
                 store.saveLearned(learned)
                 learnedCandidate = storedCode
                 toast("Guardado: " + name)
+                advanceGuidedLearning(selectedCategory)
                 if (isScreenActive(screen)) showLearn()
             }
         }
@@ -1476,6 +1545,30 @@ class MainActivity : Activity() {
         sound.setOnClickListener { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
         body.addView(route, spacedMatch(14))
 
+        val transmissionCard = card(18)
+        transmissionCard.addView(
+            bodyText("Modo de transmisión", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        transmissionCard.addView(
+            segmentedControl(
+                AudioTransmissionMode.entries.map { it.title },
+                transmitter.audioTransmissionMode.ordinal
+            ) { index ->
+                transmitter.audioTransmissionMode = AudioTransmissionMode.entries[index]
+                if (isScreenActive(screen)) showDiagnostics()
+            },
+            spacedMatch(8)
+        )
+        transmissionCard.addView(
+            bodyText(
+                transmitter.audioTransmissionMode.detail,
+                12f,
+                IOS_SECONDARY
+            )
+        )
+        body.addView(transmissionCard, spacedMatch(14))
+
         val carrierCard = card(18)
         carrierCard.addView(bodyText("Prueba de portadora", 16f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         carrierCard.addView(bodyText(
@@ -1484,10 +1577,10 @@ class MainActivity : Activity() {
             IOS_SECONDARY
         ), spacedMatch(10))
         val tests = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listOf(36_000, 38_000, 40_000).forEachIndexed { index, hz ->
+        listOf(36_000, 37_000, 38_000, 39_000, 40_000).forEachIndexed { index, hz ->
             val button = outlineButton((hz / 1000).toString() + " kHz")
             tests.addView(button, weighted())
-            if (index < 2) tests.addView(space(dp(8)))
+            if (index < 4) tests.addView(space(dp(6)))
             button.setOnClickListener {
                 val status = screenStatusText("Probando " + hz / 1000 + " kHz…")
                 sendTestCarrier(hz, status)
@@ -1676,9 +1769,11 @@ class MainActivity : Activity() {
     }
 
     private fun showRemoteBuilderDialog(category: DeviceCategory) {
-        val learned = store.loadLearned()
+        val learned = store.loadLearned().filter {
+            learnedCategory(it)?.let { value -> value == category } ?: true
+        }
         if (learned.isEmpty()) {
-            toast("Primero aprende o importa algún botón.")
+            toast("Primero aprende o importa algún botón de esta categoría.")
             return
         }
 
@@ -1887,7 +1982,7 @@ class MainActivity : Activity() {
                     importedSignals.forEach { signal ->
                         learned += signal.code.copy(
                             id = "learned:" + signal.name.replace(":", "_") + ":" +
-                                java.util.UUID.randomUUID()
+                                selectedCategory.name + ":" + java.util.UUID.randomUUID()
                         )
                     }
                     store.saveLearned(learned)
@@ -2353,6 +2448,38 @@ class MainActivity : Activity() {
             value.contains("sirc") || value.contains("sony") || value.contains("pioneer") -> 40_000
             else -> 38_000
         }
+    }
+
+    private fun guidedButtonNames(category: DeviceCategory): List<String> = when (category) {
+        DeviceCategory.TELEVISION -> listOf(
+            "Power", "Vol +", "Vol -", "Mute", "Channel +", "Channel -",
+            "Input", "Menu", "OK", "Arriba", "Abajo", "Izquierda", "Derecha", "Back"
+        )
+        DeviceCategory.AIR_CONDITIONER -> listOf(
+            "Power", "Temp +", "Temp -", "Mode", "Fan", "Swing", "Cool", "Heat", "Auto"
+        )
+        DeviceCategory.PROJECTOR -> listOf(
+            "Power", "Source", "Menu", "OK", "Arriba", "Abajo",
+            "Izquierda", "Derecha", "Back", "Mute", "Freeze"
+        )
+    }
+
+    private fun advanceGuidedLearning(category: DeviceCategory) {
+        if (!guidedLearning) return
+        val buttons = guidedButtonNames(category)
+        if (guidedIndex + 1 < buttons.size) {
+            guidedIndex += 1
+        } else {
+            guidedLearning = false
+            guidedIndex = 0
+        }
+    }
+
+    private fun learnedCategory(code: IrCode): DeviceCategory? {
+        if (!code.id.startsWith("learned:")) return null
+        val parts = code.id.split(":")
+        if (parts.size < 4) return null
+        return runCatching { DeviceCategory.valueOf(parts[2]) }.getOrNull()
     }
 
     private fun learnedName(code: IrCode): String {
