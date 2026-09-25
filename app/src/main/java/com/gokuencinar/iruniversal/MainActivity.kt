@@ -260,7 +260,7 @@ class MainActivity : Activity() {
             addView(bodyText("◉  Barrido universal", 16f, Color.WHITE, Typeface.BOLD),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(bodyText(
-                IrCodeCatalog.codes(selectedCategory, selectedRegion).size.toString() + " códigos",
+                IrCodeCatalog.scanCodes(selectedCategory, selectedRegion).size.toString() + " códigos",
                 12f,
                 IOS_SECONDARY
             ))
@@ -341,7 +341,7 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
 
-            val codes = IrCodeCatalog.codes(selectedCategory, selectedRegion)
+            val codes = IrCodeCatalog.scanCodes(selectedCategory, selectedRegion)
             if (codes.isEmpty()) {
                 status.text = "No hay una base offline para esta categoría todavía. Usa Online o importa un mando .ir."
                 activeCard.visibility = View.VISIBLE
@@ -651,7 +651,6 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.TOP
             }
-            val lettersScroll = ScrollView(this)
             val letters = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             availableLetters.forEach { letter ->
                 val button = TextView(this).apply {
@@ -670,10 +669,14 @@ class MainActivity : Activity() {
                 }
                 letters.addView(button, LinearLayout.LayoutParams(dp(36), dp(32)))
             }
-            lettersScroll.addView(letters)
-            columns.addView(lettersScroll, LinearLayout.LayoutParams(dp(44), dp(286)))
+            // The whole screen already lives inside a ScrollView. Keeping another
+            // ScrollView here makes Android 11 hand the swipe gesture to the parent,
+            // so the brand list appears frozen. Let the page own vertical scrolling.
+            columns.addView(letters, LinearLayout.LayoutParams(
+                dp(44),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
 
-            val listScroll = ScrollView(this)
             val rows = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(10), 0, 0, 0)
@@ -699,9 +702,10 @@ class MainActivity : Activity() {
                     })
                 }
             }
-            listScroll.addView(rows)
-            columns.addView(listScroll, LinearLayout.LayoutParams(
-                0, dp(286), 1f
+            columns.addView(rows, LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
             ))
             browserContainer.addView(columns, matchWrap())
         }
@@ -914,10 +918,15 @@ class MainActivity : Activity() {
                     }
                 }, LinearLayout.LayoutParams(dp(36), dp(32)))
             }
-            val ls = ScrollView(this).apply { addView(letterHost) }
-            val rs = ScrollView(this).apply { addView(listHost) }
-            columns.addView(ls, LinearLayout.LayoutParams(dp(44), dp(286)))
-            columns.addView(rs, LinearLayout.LayoutParams(0, dp(286), 1f))
+            columns.addView(letterHost, LinearLayout.LayoutParams(
+                dp(44),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            columns.addView(listHost, LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            ))
             brandBrowser.addView(columns)
             fillList()
         }
@@ -1755,8 +1764,13 @@ class MainActivity : Activity() {
             ),
             spacedMatch(10)
         )
-        val project = outlineButton("VER PROYECTO EN GITHUB")
-        credits.addView(project)
+        val creditActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val project = outlineButton("GITHUB")
+        val licenses = outlineButton("LICENCIAS")
+        creditActions.addView(project, weighted())
+        creditActions.addView(space(dp(10)))
+        creditActions.addView(licenses, weighted())
+        credits.addView(creditActions)
         project.setOnClickListener {
             startActivity(
                 Intent(
@@ -1764,6 +1778,16 @@ class MainActivity : Activity() {
                     Uri.parse("https://github.com/Gokuencinar/TVBGoneAndroid")
                 )
             )
+        }
+        licenses.setOnClickListener {
+            val notice = resources.openRawResource(R.raw.third_party_notices)
+                .bufferedReader()
+                .use { it.readText() }
+            AlertDialog.Builder(this)
+                .setTitle("Licencias de terceros")
+                .setMessage(notice)
+                .setPositiveButton("Cerrar", null)
+                .show()
         }
         body.addView(credits, spacedMatch(20))
     }
