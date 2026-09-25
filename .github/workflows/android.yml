@@ -68,14 +68,70 @@ jobs:
 
           python3 scripts/generate_extended_ir_database.py             "$COMMUNITY_DIR"             "$OFFICIAL_DIR"             app/src/main/java/com/gokuencinar/iruniversal/ir/GeneratedExtendedIrDatabase.kt
 
-      - name: Assemble debug APK
+      - name: Assemble debug APK for pull requests
+        if: github.event_name == 'pull_request'
         run: gradle --stacktrace :app:assembleDebug
+
+      - name: Restore permanent signing key
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${KEYSTORE_BASE64}" || -z "${STORE_PASSWORD}" || -z "${KEY_ALIAS}" || -z "${KEY_PASSWORD}" ]]; then
+            echo "::error::Permanent Android signing secrets are not configured. Refusing to publish an APK with an ephemeral debug signature."
+            exit 1
+          fi
+
+          KEYSTORE_PATH="$RUNNER_TEMP/tvbgone-release.jks"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+
+          {
+            echo "ANDROID_SIGNING_STORE_FILE=$KEYSTORE_PATH"
+            echo "ANDROID_SIGNING_STORE_PASSWORD=$STORE_PASSWORD"
+            echo "ANDROID_SIGNING_KEY_ALIAS=$KEY_ALIAS"
+            echo "ANDROID_SIGNING_KEY_PASSWORD=$KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Assemble signed release APK
+        if: github.event_name != 'pull_request'
+        run: gradle --stacktrace :app:assembleRelease
+
+      - name: Prepare distributable APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            cp app/build/outputs/apk/debug/app-debug.apk dist/TVBGoneAndroid.apk
+          else
+            cp app/build/outputs/apk/release/app-release.apk dist/TVBGoneAndroid.apk
+          fi
+
+      - name: Verify release signature
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [[ -z "$APKSIGNER" ]]; then
+            echo "::error::apksigner not found in Android SDK"
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose --print-certs dist/TVBGoneAndroid.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TVBGoneAndroid-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: TVBGoneAndroid
+          path: dist/TVBGoneAndroid.apk
 
       - name: Create GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -83,5 +139,5 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: TVBGoneAndroid build ${{ github.run_number }}
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: dist/TVBGoneAndroid.apk
           generate_release_notes: false
