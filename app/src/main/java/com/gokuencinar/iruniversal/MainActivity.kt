@@ -651,7 +651,6 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.TOP
             }
-            val lettersScroll = ScrollView(this)
             val letters = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             availableLetters.forEach { letter ->
                 val button = TextView(this).apply {
@@ -670,10 +669,14 @@ class MainActivity : Activity() {
                 }
                 letters.addView(button, LinearLayout.LayoutParams(dp(36), dp(32)))
             }
-            lettersScroll.addView(letters)
-            columns.addView(lettersScroll, LinearLayout.LayoutParams(dp(44), dp(286)))
+            // The whole screen already lives inside a ScrollView. Keeping another
+            // ScrollView here makes Android 11 hand the swipe gesture to the parent,
+            // so the brand list appears frozen. Let the page own vertical scrolling.
+            columns.addView(letters, LinearLayout.LayoutParams(
+                dp(44),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
 
-            val listScroll = ScrollView(this)
             val rows = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(10), 0, 0, 0)
@@ -699,9 +702,10 @@ class MainActivity : Activity() {
                     })
                 }
             }
-            listScroll.addView(rows)
-            columns.addView(listScroll, LinearLayout.LayoutParams(
-                0, dp(286), 1f
+            columns.addView(rows, LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
             ))
             browserContainer.addView(columns, matchWrap())
         }
@@ -914,10 +918,15 @@ class MainActivity : Activity() {
                     }
                 }, LinearLayout.LayoutParams(dp(36), dp(32)))
             }
-            val ls = ScrollView(this).apply { addView(letterHost) }
-            val rs = ScrollView(this).apply { addView(listHost) }
-            columns.addView(ls, LinearLayout.LayoutParams(dp(44), dp(286)))
-            columns.addView(rs, LinearLayout.LayoutParams(0, dp(286), 1f))
+            columns.addView(letterHost, LinearLayout.LayoutParams(
+                dp(44),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            columns.addView(listHost, LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            ))
             brandBrowser.addView(columns)
             fillList()
         }
