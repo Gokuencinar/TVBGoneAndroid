@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
@@ -26,6 +27,8 @@ import com.gokuencinar.iruniversal.online.OnlineIrLibrary
 import com.gokuencinar.iruniversal.online.OnlineIrRemote
 import com.gokuencinar.iruniversal.storage.AppStore
 import com.gokuencinar.iruniversal.storage.SavedDevice
+import com.gokuencinar.iruniversal.update.AppRelease
+import com.gokuencinar.iruniversal.update.AppUpdater
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -368,6 +371,7 @@ class MainActivity : Activity() {
                     }
                     currentCode.text = p.code?.displayName ?: "Barrido terminado"
                     carrierText.text = p.code?.let { it.effectiveCarrierHz.toString() + " Hz" }.orEmpty()
+                    pause.text = if (p.paused) "▶" else "Ⅱ"
                     status.text = when {
                         p.code == null -> {
                             activeCard.visibility = View.GONE
@@ -395,8 +399,18 @@ class MainActivity : Activity() {
                 status.text = "Barrido pausado."
             }
         }
-        previous.setOnClickListener { scanner.step(-1) }
-        next.setOnClickListener { scanner.step(1) }
+        previous.setOnClickListener {
+            if (!scanner.isRunning()) return@setOnClickListener
+            pause.text = "▶"
+            status.text = "Modo manual · enviando el código anterior…"
+            scanner.step(-1)
+        }
+        next.setOnClickListener {
+            if (!scanner.isRunning()) return@setOnClickListener
+            pause.text = "▶"
+            status.text = "Modo manual · enviando el código siguiente…"
+            scanner.step(1)
+        }
 
         worked.setOnClickListener {
             val candidates = scanner.candidates()
@@ -1484,7 +1498,106 @@ class MainActivity : Activity() {
             }
             startActivity(Intent.createChooser(share, "Exportar copia de seguridad"))
         }
-        body.addView(backup, spacedMatch(20))
+        body.addView(backup, spacedMatch(14))
+
+        val updater = AppUpdater(this)
+        var pendingRelease: AppRelease? = null
+        val updates = card(18)
+        updates.addView(
+            bodyText("↻  Actualizaciones", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        updates.addView(
+            bodyText(
+                "Instalada: " + updater.currentVersion + " (" + updater.currentBuild + ")",
+                13f,
+                IOS_SECONDARY
+            ),
+            spacedMatch(6)
+        )
+        val availableVersion = bodyText("", 13f, IOS_GREEN, Typeface.BOLD).apply {
+            visibility = View.GONE
+        }
+        val updateStatus = infoText(
+            "Comprueba GitHub Releases para saber si hay una APK más reciente."
+        ).apply { setPadding(0, 0, 0, dp(8)) }
+        val checkUpdate = outlineButton("↻  BUSCAR ACTUALIZACIÓN")
+        val downloadUpdate = primaryButton("↓  DESCARGAR ACTUALIZACIÓN").apply {
+            visibility = View.GONE
+        }
+        updates.addView(availableVersion, spacedMatch(6))
+        updates.addView(updateStatus, spacedMatch(8))
+        updates.addView(checkUpdate, spacedMatch(8))
+        updates.addView(downloadUpdate)
+        body.addView(updates, spacedMatch(14))
+
+        checkUpdate.setOnClickListener {
+            checkUpdate.isEnabled = false
+            checkUpdate.text = "COMPROBANDO…"
+            updateStatus.text = "Buscando actualizaciones en GitHub…"
+            worker.execute {
+                val result = updater.checkForUpdates()
+                runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    checkUpdate.isEnabled = true
+                    checkUpdate.text = "↻  BUSCAR ACTUALIZACIÓN"
+                    updateStatus.text = result.message
+                    pendingRelease = result.release
+                    if (result.updateAvailable && result.release != null) {
+                        availableVersion.text =
+                            "Disponible: " + updater.releaseLabel(result.release)
+                        availableVersion.visibility = View.VISIBLE
+                        downloadUpdate.visibility = View.VISIBLE
+                    } else {
+                        availableVersion.visibility = View.GONE
+                        downloadUpdate.visibility = View.GONE
+                    }
+                }
+            }
+        }
+
+        downloadUpdate.setOnClickListener {
+            val release = pendingRelease ?: return@setOnClickListener
+            updater.openDownload(release)
+        }
+
+        val credits = card(18)
+        credits.addView(
+            bodyText("★  Créditos", 16f, Color.WHITE, Typeface.BOLD),
+            spacedMatch(8)
+        )
+        credits.addView(
+            bodyText("Gokuencinar", 17f, IOS_RED, Typeface.BOLD),
+            spacedMatch(4)
+        )
+        credits.addView(
+            bodyText(
+                "Creador y desarrollador de TVBGoneAudio y TVBGoneAndroid.",
+                13f,
+                Color.LTGRAY
+            ),
+            spacedMatch(8)
+        )
+        credits.addView(
+            bodyText(
+                "Versión Android basada funcional y visualmente en TVBGoneAudio. " +
+                    "Incluye códigos TV-B-Gone y datos compatibles de Flipper-IRDB.",
+                12f,
+                IOS_SECONDARY
+            ),
+            spacedMatch(10)
+        )
+        val project = outlineButton("VER PROYECTO EN GITHUB")
+        credits.addView(project)
+        project.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Gokuencinar/TVBGoneAndroid")
+                )
+            )
+        }
+        body.addView(credits, spacedMatch(20))
     }
 
     private fun sendTestCarrier(hz: Int, status: TextView) {
