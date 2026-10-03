@@ -13,18 +13,22 @@ Historial de cambios de **TVBGoneAndroid**.
 - La app recuerda la última pestaña, categoría, región y ritmo de barrido usados.
 - La pantalla permanece activa mientras se ejecuta un barrido IR.
 - Las actualizaciones muestran un resumen de las notas de la release antes de descargar la APK.
+- Nueva pestaña **Mando** con interfaz de mando universal: Power, volumen, canales, mute, entradas, navegación/OK, media, teclado numérico y controles adicionales según las señales disponibles.
+- Los mandos descargados desde la biblioteca online pueden guardarse completos como perfiles reutilizables en la pestaña Mando.
 
 ### Mejorado
 - Barra inferior, tarjetas, botones, campos, métricas, controles segmentados y estados vacíos rediseñados para mayor contraste y respuesta visual.
-- El estado del accesorio en Control abre Diagnóstico con un toque.
+- El estado del accesorio en Control abre Ajustes / Info con un toque.
 - El botón/gesto Atrás de Android respeta la navegación interna al entrar en IR Online.
 - Se descartan respuestas antiguas de la carga de marcas online al cambiar rápidamente de fuente.
 - Targets táctiles y estados seleccionados ampliados en los principales controles.
+- Tocar un mando guardado en Equipos abre directamente el nuevo modo de mando completo.
+- La antigua pestaña Diagnóstico pasa a llamarse **Ajustes / Info** y conserva todas las comprobaciones técnicas, copia de seguridad, actualizaciones y créditos.
 
 ### Corregido
 - Al terminar un barrido universal, la tarjeta permanece visible para poder pulsar `FUNCIONÓ` y elegir entre los últimos candidatos.
-- Diagnóstico se refresca correctamente al conceder el permiso de micrófono.
-- Diagnóstico deja de mostrar como hechos ajustes de audio que la app no puede verificar y los presenta como recomendaciones.
+- Ajustes / Info se refresca correctamente al conceder el permiso de micrófono.
+- Ajustes / Info deja de mostrar como hechos ajustes de audio que la app no puede verificar y los presenta como recomendaciones.
 
 ## 0.1.0-android — 2026-09-23
 

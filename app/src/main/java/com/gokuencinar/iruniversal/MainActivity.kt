@@ -76,7 +76,7 @@ class MainActivity : Activity() {
     private var guidedIndex = 0
     private var currentTab = 0
         set(value) {
-            field = value.coerceIn(0, 4)
+            field = value.coerceIn(0, 5)
             if (::preferences.isInitialized) {
                 preferences.edit().putInt(PREF_LAST_TAB, field).apply()
             }
@@ -95,6 +95,7 @@ class MainActivity : Activity() {
         private const val PREF_REGION = "irUniversal.selectedRegion"
         private const val PREF_SCAN_PACE = "irUniversal.scanPace"
         private const val PREF_LAST_TAB = "irUniversal.lastTab"
+        private const val PREF_REMOTE_ID = "irUniversal.remoteControl.selectedRemote"
 
         private val CYBER_CYAN = Color.rgb(0, 229, 255)
         private val CYBER_MAGENTA = Color.rgb(255, 43, 214)
@@ -143,7 +144,7 @@ class MainActivity : Activity() {
                     ?: ScanPace.FAST.name
             )
         }.getOrDefault(ScanPace.FAST)
-        currentTab = preferences.getInt(PREF_LAST_TAB, 0).coerceIn(0, 4)
+        currentTab = preferences.getInt(PREF_LAST_TAB, 0).coerceIn(0, 5)
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -176,19 +177,21 @@ class MainActivity : Activity() {
         ))
 
         addBottomTab("Control", R.drawable.ic_tab_power, 0)
+        addBottomTab("Mando", R.drawable.ic_tab_remote, 5)
         addBottomTab("Códigos", R.drawable.ic_tab_codes, 1)
-        addBottomTab("Mis equipos", R.drawable.ic_tab_star, 2)
+        addBottomTab("Equipos", R.drawable.ic_tab_star, 2)
         addBottomTab("Aprender", R.drawable.ic_tab_mic, 3)
-        addBottomTab("Diagnóstico", R.drawable.ic_tab_diagnostics, 4)
+        addBottomTab("Ajustes", R.drawable.ic_tab_settings, 4)
 
         setContentView(root)
         selectTab(currentTab)
     }
 
     private fun selectTab(index: Int) {
-        currentTab = index.coerceIn(0, 4)
+        currentTab = index.coerceIn(0, 5)
         bottomTabViews.forEachIndexed { itemIndex, item ->
-            val selected = itemIndex == currentTab
+            val tabIndex = (item.tag as? Int) ?: itemIndex
+            val selected = tabIndex == currentTab
             item.isSelected = selected
             val color = if (selected) CYBER_CYAN else IOS_SECONDARY
             (item.getChildAt(0) as? ImageView)?.setColorFilter(color)
@@ -208,12 +211,14 @@ class MainActivity : Activity() {
             1 -> showCodes()
             2 -> showSavedDevices()
             3 -> showLearn()
-            else -> showDiagnostics()
+            4 -> showDiagnostics()
+            else -> showRemoteControl()
         }
     }
 
     private fun addBottomTab(label: String, iconRes: Int, index: Int) {
         val item = LinearLayout(this).apply {
+            tag = index
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             isClickable = true
@@ -232,7 +237,7 @@ class MainActivity : Activity() {
         }
         val text = TextView(this).apply {
             this.text = label
-            textSize = 11f
+            textSize = 10f
             gravity = Gravity.CENTER
             setTextColor(IOS_SECONDARY)
             maxLines = 1
@@ -446,7 +451,7 @@ class MainActivity : Activity() {
 
             val active = transmitter.active()
             if (!active.isAvailable()) {
-                status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                status.text = "El transmisor seleccionado no está disponible. Revisa Ajustes / Info."
                 activeCard.visibility = View.VISIBLE
                 return@setOnClickListener
             }
@@ -805,7 +810,7 @@ class MainActivity : Activity() {
 
                 val active = transmitter.active()
                 if (!active.isAvailable()) {
-                    status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                    status.text = "El transmisor seleccionado no está disponible. Revisa Ajustes / Info."
                     return@setOnClickListener
                 }
 
@@ -1176,7 +1181,7 @@ class MainActivity : Activity() {
                             if (!isScreenActive(screen)) return@runOnUiThread
                             loaded.onSuccess { value ->
                                 status.text = value.name + " · " + value.signals.size + " señales"
-                                showImportedSignals(value.signals, selectedCategory)
+                                showImportedSignals(value.signals, selectedCategory, value.name)
                             }.onFailure {
                                 status.text = "Error: " + (it.message ?: "desconocido")
                             }
@@ -1339,7 +1344,7 @@ class MainActivity : Activity() {
                     importButton.isEnabled = true
                     loaded.onSuccess { value ->
                         importStatus.text = value.name + " · " + value.signals.size + " señales"
-                        showImportedSignals(value.signals, selectedCategory)
+                        showImportedSignals(value.signals, selectedCategory, value.name)
                     }.onFailure {
                         importStatus.text = "Error: " + (it.message ?: "desconocido")
                     }
@@ -1652,6 +1657,378 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showRemoteControl() {
+        val screen = beginScreen()
+        val body = installScreenBody("Mando universal")
+        val remotes = store.loadRemotes()
+
+        fun openOnlineFor(category: DeviceCategory) {
+            selectedCategory = category
+            selectTab(1)
+            showOnline()
+        }
+
+        if (remotes.isEmpty()) {
+            val hero = card(22).apply {
+                gravity = Gravity.CENTER
+                addView(bodyText("▤", 44f, CYBER_CYAN, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                }, spacedMatch(8))
+                addView(bodyText("REMOTE DECK // SIN PERFIL", 13f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                    letterSpacing = 0.08f
+                }, spacedMatch(8))
+                addView(bodyText(
+                    "Crea o descarga un mando completo para usar Power, volumen, canales, entradas, cruceta y el resto de botones desde una sola pantalla.",
+                    14f,
+                    IOS_SECONDARY
+                ).apply {
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                })
+            }
+            body.addView(hero, spacedMatch(16))
+
+            body.addView(segmentedControl(
+                listOf("TV", "Aire", "Proyector"),
+                selectedCategory.ordinal
+            ) { index -> selectedCategory = DeviceCategory.entries[index] }, spacedMatch(12))
+
+            val create = primaryButton("＋  CREAR CON BOTONES APRENDIDOS")
+            val online = outlineButton("◎  BUSCAR MANDO ONLINE")
+            body.addView(create, spacedMatch(10))
+            body.addView(online, spacedMatch(16))
+            create.setOnClickListener {
+                showRemoteBuilderDialog(selectedCategory) { remote ->
+                    preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+                    if (isScreenActive(screen)) showRemoteControl()
+                }
+            }
+            online.setOnClickListener { openOnlineFor(selectedCategory) }
+
+            body.addView(emptyState(
+                "Consejo",
+                "Los mandos descargados desde la biblioteca online ahora pueden guardarse completos. También puedes aprender o importar botones en la pestaña Aprender."
+            ))
+            return
+        }
+
+        val preferredId = preferences.getString(PREF_REMOTE_ID, null)
+        val remote = remotes.firstOrNull { it.id == preferredId } ?: remotes.first()
+        if (preferredId != remote.id) {
+            preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+        }
+
+        val header = card(20).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = categoryGlyph(remote.category)
+                textSize = 26f
+                gravity = Gravity.CENTER
+                setTextColor(CYBER_CYAN)
+                background = circleDrawable(Color.argb(34, 0, 229, 255))
+            }, LinearLayout.LayoutParams(dp(54), dp(54)))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, dp(8), 0)
+                addView(bodyText(remote.name, 18f, Color.WHITE, Typeface.BOLD))
+                addView(bodyText(
+                    remote.category.title + " · " + remote.buttons.size + " botones",
+                    12f,
+                    IOS_SECONDARY
+                ))
+                addView(bodyText("REMOTE // ACTIVE", 10f, CYBER_GREEN, Typeface.BOLD).apply {
+                    letterSpacing = 0.08f
+                    setPadding(0, dp(4), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bodyText("⌄", 26f, CYBER_CYAN, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(dp(42), dp(48)))
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Cambiar mando. Seleccionado: " + remote.name
+            setOnClickListener {
+                performClickHaptic()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Seleccionar mando")
+                    .setSingleChoiceItems(
+                        remotes.map { it.name + " · " + it.category.shortTitle }.toTypedArray(),
+                        remotes.indexOfFirst { it.id == remote.id }
+                    ) { dialog, which ->
+                        val selected = remotes.getOrNull(which) ?: return@setSingleChoiceItems
+                        preferences.edit().putString(PREF_REMOTE_ID, selected.id).apply()
+                        dialog.dismiss()
+                        if (isScreenActive(screen)) showRemoteControl()
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
+        }
+        body.addView(header, spacedMatch(12))
+
+        val quickActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val newRemote = outlineButton("＋  NUEVO")
+        val onlineRemote = outlineButton("◎  ONLINE")
+        val shareRemote = outlineButton("↗  COMPARTIR")
+        quickActions.addView(newRemote, weighted())
+        quickActions.addView(space(dp(7)))
+        quickActions.addView(onlineRemote, weighted())
+        quickActions.addView(space(dp(7)))
+        quickActions.addView(shareRemote, weighted())
+        body.addView(quickActions, spacedMatch(14))
+        newRemote.setOnClickListener {
+            selectedCategory = remote.category
+            showRemoteBuilderDialog(remote.category) { created ->
+                preferences.edit().putString(PREF_REMOTE_ID, created.id).apply()
+                if (isScreenActive(screen)) showRemoteControl()
+            }
+        }
+        onlineRemote.setOnClickListener { openOnlineFor(remote.category) }
+        shareRemote.setOnClickListener { shareCustomRemote(remote) }
+
+        val status = infoText("Listo · " + transmitter.active().name).apply {
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = cyberPanelDrawable(
+                fill = Color.argb(150, 9, 13, 20),
+                radiusDp = 12,
+                stroke = Color.argb(85, 0, 229, 255)
+            )
+        }
+        body.addView(status, spacedMatch(14))
+
+        val consumed = mutableSetOf<String>()
+
+        fun normalize(value: String): String = value
+            .trim()
+            .lowercase()
+            .replace("á", "a")
+            .replace("é", "e")
+            .replace("í", "i")
+            .replace("ó", "o")
+            .replace("ú", "u")
+            .replace("ü", "u")
+            .replace("ñ", "n")
+            .replace("+", " plus ")
+            .replace("-", " minus ")
+            .replace("_", " ")
+            .replace(Regex("[^a-z0-9 ]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        fun pick(vararg aliases: String): CustomRemoteButton? {
+            val wanted = aliases.map(::normalize).toSet()
+            val found = remote.buttons.firstOrNull { button ->
+                button.id !in consumed && normalize(button.name) in wanted
+            }
+            if (found != null) consumed += found.id
+            return found
+        }
+
+        fun key(label: String, button: CustomRemoteButton?, danger: Boolean = false): Button {
+            val view = if (danger) tintedButton(label, CYBER_DANGER) else outlineButton(label)
+            view.contentDescription = if (button == null) "$label, sin código asignado" else "$label, ${button.name}"
+            view.isEnabled = button != null
+            view.alpha = if (button == null) 0.34f else 1f
+            view.setOnClickListener {
+                val value = button ?: return@setOnClickListener
+                sendAsync(value.code, status, screen)
+            }
+            return view
+        }
+
+        fun addKeyRow(vararg values: Pair<String, CustomRemoteButton?>) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            values.forEachIndexed { index, value ->
+                row.addView(key(value.first, value.second), weighted())
+                if (index < values.lastIndex) row.addView(space(dp(8)))
+            }
+            body.addView(row, spacedMatch(9))
+        }
+
+        val power = pick("Power", "Power toggle", "Power on off", "On off", "Encendido", "Apagar")
+        val powerCard = card(22).apply {
+            gravity = Gravity.CENTER
+            addView(bodyText("POWER", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.14f
+            }, spacedMatch(8))
+            val powerButton = key("⏻", power, danger = true).apply {
+                textSize = 30f
+                minWidth = dp(76)
+                minHeight = dp(76)
+                background = if (power != null) {
+                    circleDrawable(CYBER_DANGER)
+                } else {
+                    circleDrawable(Color.argb(60, 255, 72, 96))
+                }
+            }
+            addView(powerButton, LinearLayout.LayoutParams(dp(76), dp(76)))
+        }
+        body.addView(powerCard, spacedMatch(12))
+
+        when (remote.category) {
+            DeviceCategory.TELEVISION -> {
+                val input = pick("Input", "Source", "AV", "Entrada")
+                val home = pick("Home", "Inicio", "Smart", "Smart hub")
+                val menu = pick("Menu", "Settings", "Ajustes")
+                addKeyRow("INPUT" to input, "HOME" to home, "MENU" to menu)
+
+                val up = pick("Up", "Arrow up", "Dpad up", "Cursor up", "Arriba")
+                val down = pick("Down", "Arrow down", "Dpad down", "Cursor down", "Abajo")
+                val left = pick("Left", "Arrow left", "Dpad left", "Cursor left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Dpad right", "Cursor right", "Derecha")
+                val ok = pick("OK", "Enter", "Select", "Center", "Centro")
+                val nav = card(22)
+                nav.addView(bodyText("NAVIGATION", 11f, CYBER_CYAN, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                    letterSpacing = 0.12f
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(space(dp(56)), weighted())
+                    addView(key("▲", up), weighted())
+                    addView(space(dp(56)), weighted())
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(key("◀", left), weighted())
+                    addView(space(dp(8)))
+                    addView(key("OK", ok), weighted())
+                    addView(space(dp(8)))
+                    addView(key("▶", right), weighted())
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(space(dp(56)), weighted())
+                    addView(key("▼", down), weighted())
+                    addView(space(dp(56)), weighted())
+                })
+                body.addView(nav, spacedMatch(12))
+
+                val volUp = pick("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up", "Volumen plus", "Subir volumen")
+                val volDown = pick("Vol -", "Vol minus", "Vol down", "Volume minus", "Volume down", "Volumen minus", "Bajar volumen")
+                val chUp = pick("Channel +", "Channel plus", "Channel up", "Ch plus", "Ch up", "Prog plus", "Program plus")
+                val chDown = pick("Channel -", "Channel minus", "Channel down", "Ch minus", "Ch down", "Prog minus", "Program minus")
+                val mute = pick("Mute", "Silence", "Silencio")
+                val rockers = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                fun rocker(title: String, plus: CustomRemoteButton?, minus: CustomRemoteButton?): View =
+                    card(18).apply {
+                        gravity = Gravity.CENTER
+                        addView(bodyText(title, 11f, CYBER_CYAN, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                        }, spacedMatch(7))
+                        addView(key("＋", plus), matchWrap())
+                        addView(bodyText(title, 10f, IOS_SECONDARY, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                            setPadding(0, dp(6), 0, dp(6))
+                        })
+                        addView(key("−", minus), matchWrap())
+                    }
+                rockers.addView(rocker("VOL", volUp, volDown), weighted())
+                rockers.addView(space(dp(10)))
+                rockers.addView(card(18).apply {
+                    gravity = Gravity.CENTER
+                    addView(bodyText("AUDIO", 11f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                        gravity = Gravity.CENTER
+                    }, spacedMatch(10))
+                    addView(key("MUTE", mute), matchWrap())
+                }, weighted())
+                rockers.addView(space(dp(10)))
+                rockers.addView(rocker("CH", chUp, chDown), weighted())
+                body.addView(rockers, spacedMatch(12))
+
+                val back = pick("Back", "Return", "Exit", "Atras", "Volver")
+                val guide = pick("Guide", "EPG", "Guia")
+                val info = pick("Info", "Display")
+                addKeyRow("BACK" to back, "GUIDE" to guide, "INFO" to info)
+
+                val play = pick("Play", "Play pause", "Playpause")
+                val pause = pick("Pause")
+                val stop = pick("Stop")
+                val previous = pick("Previous", "Prev", "Rewind", "Back skip")
+                val next = pick("Next", "Forward", "Fast forward", "Skip")
+                if (listOf(play, pause, stop, previous, next).any { it != null }) {
+                    body.addView(sectionHeader("Media"))
+                    addKeyRow("⏮" to previous, "▶" to play, "Ⅱ" to pause, "■" to stop, "⏭" to next)
+                }
+
+                val numbers = (0..9).associateWith { value ->
+                    pick(value.toString(), "Num $value", "Number $value", "Digit $value", "Key $value")
+                }
+                if (numbers.values.any { it != null }) {
+                    body.addView(sectionHeader("Teclado numérico"))
+                    listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9)).forEach { rowValues ->
+                        addKeyRow(*rowValues.map { it.toString() to numbers[it] }.toTypedArray())
+                    }
+                    val zeroRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    zeroRow.addView(Space(this@MainActivity), weighted())
+                    zeroRow.addView(space(dp(8)))
+                    zeroRow.addView(key("0", numbers[0]), weighted())
+                    zeroRow.addView(space(dp(8)))
+                    zeroRow.addView(Space(this), weighted())
+                    body.addView(zeroRow, spacedMatch(10))
+                }
+            }
+
+            DeviceCategory.AIR_CONDITIONER -> {
+                val tempUp = pick("Temp +", "Temp plus", "Temperature plus", "Temp up", "Temperature up")
+                val tempDown = pick("Temp -", "Temp minus", "Temperature minus", "Temp down", "Temperature down")
+                val mode = pick("Mode", "Modo")
+                val fan = pick("Fan", "Ventilador")
+                val swing = pick("Swing", "Oscillation", "Oscilacion")
+                addKeyRow("TEMP ＋" to tempUp, "TEMP −" to tempDown)
+                addKeyRow("MODE" to mode, "FAN" to fan, "SWING" to swing)
+                addKeyRow(
+                    "COOL" to pick("Cool", "Frio"),
+                    "HEAT" to pick("Heat", "Calor"),
+                    "AUTO" to pick("Auto")
+                )
+            }
+
+            DeviceCategory.PROJECTOR -> {
+                val source = pick("Source", "Input", "Entrada")
+                val menu = pick("Menu")
+                val back = pick("Back", "Return", "Exit", "Atras")
+                addKeyRow("SOURCE" to source, "MENU" to menu, "BACK" to back)
+                val up = pick("Up", "Arrow up", "Arriba")
+                val down = pick("Down", "Arrow down", "Abajo")
+                val left = pick("Left", "Arrow left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Derecha")
+                val ok = pick("OK", "Enter", "Select")
+                addKeyRow("▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+                addKeyRow(
+                    "MUTE" to pick("Mute", "Silencio"),
+                    "FREEZE" to pick("Freeze", "Pausa imagen")
+                )
+            }
+        }
+
+        val extras = remote.buttons.filterNot { it.id in consumed }
+        if (extras.isNotEmpty()) {
+            body.addView(sectionHeader("Más controles     " + extras.size))
+            extras.chunked(3).forEach { chunk ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                chunk.forEachIndexed { index, button ->
+                    row.addView(key(button.name.take(18), button), weighted())
+                    if (index < chunk.lastIndex) row.addView(space(dp(8)))
+                }
+                repeat(3 - chunk.size) {
+                    row.addView(space(dp(8)))
+                    row.addView(Space(this), weighted())
+                }
+                body.addView(row, spacedMatch(9))
+            }
+        }
+
+        body.addView(infoText(
+            "Si un botón aparece atenuado, este perfil no contiene esa señal. Puedes añadir otro mando desde botones aprendidos o descargar un perfil más completo desde Online."
+        ), spacedMatch(18))
+    }
+
     private fun showSavedDevices() {
         val screen = beginScreen()
         val body = installScreenBody("Mis equipos")
@@ -1696,7 +2073,8 @@ class MainActivity : Activity() {
                             IOS_SECONDARY
                         ).apply { gravity = Gravity.CENTER })
                         setOnClickListener {
-                            showCustomRemote(remote, screen)
+                            preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+                            selectTab(5)
                         }
                         setOnLongClickListener {
                             AlertDialog.Builder(this@MainActivity)
@@ -1846,7 +2224,7 @@ class MainActivity : Activity() {
 
     private fun showDiagnostics() {
         val screen = beginScreen()
-        val body = installScreenBody("Diagnóstico")
+        val body = installScreenBody("Ajustes / Info")
         val input = learner.inspectInput()
         val outputReady = transmitter.active().isAvailable()
 
@@ -2148,7 +2526,10 @@ class MainActivity : Activity() {
         body.addView(credits, spacedMatch(20))
     }
 
-    private fun showRemoteBuilderDialog(category: DeviceCategory) {
+    private fun showRemoteBuilderDialog(
+        category: DeviceCategory,
+        onCreated: ((CustomRemote) -> Unit)? = null
+    ) {
         val learned = store.loadLearned().filter {
             learnedCategory(it)?.let { value -> value == category } ?: true
         }
@@ -2202,6 +2583,7 @@ class MainActivity : Activity() {
                     )
                     store.addRemote(remote)
                     toast("Mando creado: " + remote.name)
+                    onCreated?.invoke(remote)
                 }
             }
             .setNegativeButton("Cancelar", null)
@@ -2220,19 +2602,21 @@ class MainActivity : Activity() {
                     screen
                 )
             }
-            .setNeutralButton("Compartir .ir") { _, _ ->
-                val text = FlipperIrCodec.exportRawRecords(
-                    remote.buttons.map { it.name to it.code }
-                )
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
-                    putExtra(Intent.EXTRA_TEXT, text)
-                }
-                startActivity(Intent.createChooser(share, "Compartir mando"))
-            }
+            .setNeutralButton("Compartir .ir") { _, _ -> shareCustomRemote(remote) }
             .setNegativeButton("Cerrar", null)
             .show()
+    }
+
+    private fun shareCustomRemote(remote: CustomRemote) {
+        val text = FlipperIrCodec.exportRawRecords(
+            remote.buttons.map { it.name to it.code }
+        )
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(share, "Compartir mando"))
     }
 
     private fun openBackupPicker() {
@@ -2274,7 +2658,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showImportedSignals(signals: List<ImportedIrSignal>, category: DeviceCategory) {
+    private fun showImportedSignals(
+        signals: List<ImportedIrSignal>,
+        category: DeviceCategory,
+        remoteName: String = "Mando importado"
+    ) {
         if (signals.isEmpty()) return toast("No hay señales compatibles.")
         val names = signals.map { it.name + " · " + it.sourceDescription }.toTypedArray()
         AlertDialog.Builder(this)
@@ -2298,6 +2686,19 @@ class MainActivity : Activity() {
                     }
                     .setNegativeButton("Cancelar", null)
                     .show()
+            }
+            .setNeutralButton("Guardar mando completo") { _, _ ->
+                val remote = CustomRemote(
+                    name = remoteName.trim().ifBlank { "Mando importado" },
+                    category = category,
+                    buttons = signals.map { signal ->
+                        CustomRemoteButton(name = signal.name, code = signal.code)
+                    }
+                )
+                store.addRemote(remote)
+                preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+                performSuccessHaptic()
+                toast("Mando guardado: " + remote.name)
             }
             .show()
     }
@@ -2865,7 +3266,7 @@ class MainActivity : Activity() {
         return card(20).apply {
             isClickable = true
             isFocusable = true
-            contentDescription = "Estado del accesorio. Abrir diagnóstico"
+            contentDescription = "Estado del accesorio. Abrir Ajustes e información"
             val top = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -2892,7 +3293,7 @@ class MainActivity : Activity() {
                 11f,
                 IOS_SECONDARY
             ))
-            addView(bodyText("TOCA PARA ABRIR DIAGNÓSTICO  ›", 10f, CYBER_CYAN, Typeface.BOLD).apply {
+            addView(bodyText("TOCA PARA ABRIR AJUSTES / INFO  ›", 10f, CYBER_CYAN, Typeface.BOLD).apply {
                 letterSpacing = 0.08f
                 setPadding(0, dp(10), 0, 0)
             })
