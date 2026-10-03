@@ -399,6 +399,9 @@ class MainActivity : Activity() {
         val previous = outlineButton("◀|")
         val pause = outlineButton("Ⅱ")
         val next = outlineButton("|▶")
+        previous.contentDescription = "Código anterior"
+        pause.contentDescription = "Pausar o reanudar barrido"
+        next.contentDescription = "Código siguiente"
         transport.addView(previous, weighted())
         transport.addView(space(dp(8)))
         transport.addView(pause, weighted())
@@ -408,6 +411,14 @@ class MainActivity : Activity() {
         val worked = tintedButton("✓  FUNCIONÓ", IOS_GREEN)
         activeCard.addView(worked, matchWrap())
         body.addView(activeCard, spacedMatch(18))
+
+        fun setTransportEnabled(enabled: Boolean) {
+            listOf(previous, pause, next).forEach { control ->
+                control.isEnabled = enabled
+                control.alpha = if (enabled) 1f else 0.42f
+            }
+        }
+        setTransportEnabled(false)
 
         fun setScanConfigurationEnabled(enabled: Boolean) {
             setSegmentEnabled(categoryControl, enabled)
@@ -448,6 +459,7 @@ class MainActivity : Activity() {
             activeCard.visibility = View.VISIBLE
             start.text = "DETENER BARRIDO"
             setScanConfigurationEnabled(false)
+            setTransportEnabled(true)
             scanner.start(codes, selectedPace) { p ->
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
@@ -470,6 +482,7 @@ class MainActivity : Activity() {
                             performSuccessHaptic()
                             start.text = categoryButtonTitle(selectedCategory)
                             setScanConfigurationEnabled(true)
+                            setTransportEnabled(false)
                             progress.progress = 1000
                             currentCode.text = "BARRIDO COMPLETADO"
                             carrierText.text = "Últimos candidatos disponibles"
@@ -690,6 +703,7 @@ class MainActivity : Activity() {
 
         fun stopBrandScanForNavigation() {
             if (scanner.isRunning()) scanner.stop()
+            setKeepScreenOn(false)
         }
 
         fun addBrandSweep(brand: String) {
@@ -768,11 +782,16 @@ class MainActivity : Activity() {
             fun setRunningUi(running: Boolean) {
                 start.text = if (running) "■  DETENER BARRIDO" else "▶  BARRER ESTA MARCA"
                 pause.text = if (scanner.isPaused()) "▶" else "Ⅱ"
+                listOf(previous, pause, next).forEach { control ->
+                    control.isEnabled = running
+                    control.alpha = if (running) 1f else 0.42f
+                }
                 for (i in 0 until paceControl.childCount) {
                     paceControl.getChildAt(i).isEnabled = !running
                     paceControl.getChildAt(i).alpha = if (running) 0.55f else 1f
                 }
             }
+            setRunningUi(false)
 
             start.setOnClickListener {
                 if (scanner.isRunning()) {
@@ -1061,11 +1080,16 @@ class MainActivity : Activity() {
 
         var reloadBrands: (() -> Unit)? = null
         var brandLoadGeneration = 0L
+        var onlineSearchGeneration = 0L
+        val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
         val sourceControl = segmentedControl(
             listOf("Todas", "Flipper", "Oficial", "IRDB"),
             sourceIndex
         ) { index ->
             sourceIndex = index
+            onlineSearchGeneration += 1
+            searchButton.isEnabled = true
+            searchButton.text = "⌕  BUSCAR CÓDIGOS"
             reloadBrands?.invoke()
         }
         searchCard.addView(sourceControl, spacedMatch(8))
@@ -1076,7 +1100,6 @@ class MainActivity : Activity() {
             buttonTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         searchCard.addView(deep, spacedMatch(8))
-        val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
         searchCard.addView(searchButton, matchWrap())
         body.addView(searchCard, spacedMatch(14))
 
@@ -1275,6 +1298,8 @@ class MainActivity : Activity() {
             val categorySnapshot = selectedCategory
             val deepSearch = deep.isChecked
             val sourcesSnapshot = selectedSources().toList()
+            onlineSearchGeneration += 1
+            val searchGeneration = onlineSearchGeneration
             status.text = "Consultando bibliotecas IR…"
             searchButton.isEnabled = false
             searchButton.text = "BUSCANDO…"
@@ -1289,6 +1314,7 @@ class MainActivity : Activity() {
                 }
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
+                    if (searchGeneration != onlineSearchGeneration) return@runOnUiThread
                     searchButton.isEnabled = true
                     searchButton.text = "⌕  BUSCAR CÓDIGOS"
                     found.onSuccess {
