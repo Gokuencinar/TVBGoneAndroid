@@ -15,8 +15,10 @@ import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.*
 import com.gokuencinar.iruniversal.flipper.FlipperIrCodec
 import com.gokuencinar.iruniversal.flipper.ImportedIrSignal
@@ -49,13 +51,38 @@ class MainActivity : Activity() {
     private var importedSignals: List<ImportedIrSignal> = emptyList()
     private var screenGeneration = 0L
     private var selectedCategory = DeviceCategory.TELEVISION
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_CATEGORY, value.name).apply()
+            }
+        }
     private var selectedRegion = TvRegion.EUROPE
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_REGION, value.name).apply()
+            }
+        }
     private var selectedPace = ScanPace.FAST
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_SCAN_PACE, value.name).apply()
+            }
+        }
     private var selectedLearnCarrierIndex = 0
     private var guidedLearning = false
     private var guidedIndex = 0
     private var currentTab = 0
+        set(value) {
+            field = value.coerceIn(0, 4)
+            if (::preferences.isInitialized) {
+                preferences.edit().putInt(PREF_LAST_TAB, field).apply()
+            }
+        }
     private val bottomTabViews = mutableListOf<LinearLayout>()
+    private var screenBackAction: (() -> Unit)? = null
 
     companion object {
         private const val REQUEST_MIC = 1001
@@ -64,11 +91,29 @@ class MainActivity : Activity() {
         private const val PREF_BROWSER_MODE = "irUniversal.localBrowserPresentation"
         private const val PREF_ONLINE_BROWSER_MODE = "irUniversal.onlineBrowserPresentation"
         private const val PREF_OLED_MODE = "irUniversal.oledMode"
-        private val IOS_RED = Color.rgb(255, 59, 48)
-        private val IOS_GREEN = Color.rgb(52, 199, 89)
-        private val IOS_SECONDARY = Color.rgb(142, 142, 147)
-        private val IOS_SURFACE = Color.argb(14, 255, 255, 255)
-        private val IOS_BORDER = Color.argb(20, 255, 255, 255)
+        private const val PREF_CATEGORY = "irUniversal.selectedCategory"
+        private const val PREF_REGION = "irUniversal.selectedRegion"
+        private const val PREF_SCAN_PACE = "irUniversal.scanPace"
+        private const val PREF_LAST_TAB = "irUniversal.lastTab"
+
+        private val CYBER_CYAN = Color.rgb(0, 229, 255)
+        private val CYBER_MAGENTA = Color.rgb(255, 43, 214)
+        private val CYBER_PURPLE = Color.rgb(139, 92, 246)
+        private val CYBER_GREEN = Color.rgb(57, 255, 136)
+        private val CYBER_DANGER = Color.rgb(255, 72, 96)
+        private val CYBER_WARNING = Color.rgb(255, 176, 32)
+        private val CYBER_SURFACE = Color.rgb(15, 19, 27)
+        private val CYBER_SURFACE_ALT = Color.rgb(21, 26, 36)
+        private val CYBER_BORDER = Color.rgb(39, 62, 74)
+        private val CYBER_MUTED = Color.rgb(148, 163, 184)
+
+        // Legacy names are kept so the existing UI can inherit the new palette
+        // without duplicating visual logic across every screen.
+        private val IOS_RED = CYBER_MAGENTA
+        private val IOS_GREEN = CYBER_GREEN
+        private val IOS_SECONDARY = CYBER_MUTED
+        private val IOS_SURFACE = Color.argb(210, 15, 19, 27)
+        private val IOS_BORDER = Color.argb(145, 0, 229, 255)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +124,26 @@ class MainActivity : Activity() {
         store = AppStore(this)
         learner = IrLearner(applicationContext)
         preferences = getSharedPreferences("ir_universal_android", MODE_PRIVATE)
+
+        selectedCategory = runCatching {
+            DeviceCategory.valueOf(
+                preferences.getString(PREF_CATEGORY, DeviceCategory.TELEVISION.name)
+                    ?: DeviceCategory.TELEVISION.name
+            )
+        }.getOrDefault(DeviceCategory.TELEVISION)
+        selectedRegion = runCatching {
+            TvRegion.valueOf(
+                preferences.getString(PREF_REGION, TvRegion.EUROPE.name)
+                    ?: TvRegion.EUROPE.name
+            )
+        }.getOrDefault(TvRegion.EUROPE)
+        selectedPace = runCatching {
+            ScanPace.valueOf(
+                preferences.getString(PREF_SCAN_PACE, ScanPace.FAST.name)
+                    ?: ScanPace.FAST.name
+            )
+        }.getOrDefault(ScanPace.FAST)
+        currentTab = preferences.getInt(PREF_LAST_TAB, 0).coerceIn(0, 4)
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -98,8 +163,12 @@ class MainActivity : Activity() {
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(4), dp(5), dp(4), dp(3))
-            setBackgroundColor(Color.BLACK)
+            setPadding(dp(6), dp(6), dp(6), dp(5))
+            background = cyberPanelDrawable(
+                fill = Color.rgb(7, 10, 16),
+                radiusDp = 0,
+                stroke = Color.argb(110, 0, 229, 255)
+            )
         }
         root.addView(bottomBar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -113,16 +182,26 @@ class MainActivity : Activity() {
         addBottomTab("Diagnóstico", R.drawable.ic_tab_diagnostics, 4)
 
         setContentView(root)
-        selectTab(0)
+        selectTab(currentTab)
     }
 
     private fun selectTab(index: Int) {
         currentTab = index.coerceIn(0, 4)
         bottomTabViews.forEachIndexed { itemIndex, item ->
             val selected = itemIndex == currentTab
-            val color = if (selected) IOS_RED else IOS_SECONDARY
+            item.isSelected = selected
+            val color = if (selected) CYBER_CYAN else IOS_SECONDARY
             (item.getChildAt(0) as? ImageView)?.setColorFilter(color)
             (item.getChildAt(1) as? TextView)?.setTextColor(color)
+            item.background = if (selected) {
+                cyberPanelDrawable(
+                    fill = Color.argb(34, 0, 229, 255),
+                    radiusDp = 12,
+                    stroke = Color.argb(105, 0, 229, 255)
+                )
+            } else {
+                roundedDrawable(Color.TRANSPARENT, 12)
+            }
         }
         when (currentTab) {
             0 -> showControl()
@@ -139,7 +218,12 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             isClickable = true
             isFocusable = true
+            contentDescription = label
             setPadding(dp(2), dp(3), dp(2), dp(1))
+            setOnClickListener {
+                performClickHaptic()
+                selectTab(index)
+            }
         }
         val icon = ImageView(this).apply {
             setImageResource(iconRes)
@@ -148,7 +232,7 @@ class MainActivity : Activity() {
         }
         val text = TextView(this).apply {
             this.text = label
-            textSize = 10f
+            textSize = 11f
             gravity = Gravity.CENTER
             setTextColor(IOS_SECONDARY)
             maxLines = 1
@@ -158,7 +242,6 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
-        item.setOnClickListener { selectTab(index) }
         bottomTabViews += item
         bottomBar.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
     }
@@ -180,7 +263,7 @@ class MainActivity : Activity() {
                     addView(TextView(this@MainActivity).apply {
                         text = categoryGlyph(device.category)
                         textSize = 22f
-                        setTextColor(IOS_RED)
+                        setTextColor(CYBER_CYAN)
                         gravity = Gravity.CENTER
                     }, LinearLayout.LayoutParams(dp(34), dp(42)))
                     addView(LinearLayout(this@MainActivity).apply {
@@ -191,7 +274,7 @@ class MainActivity : Activity() {
                     addView(TextView(this@MainActivity).apply {
                         text = "⏻"
                         textSize = 24f
-                        setTextColor(IOS_RED)
+                        setTextColor(CYBER_MAGENTA)
                         gravity = Gravity.CENTER
                     }, LinearLayout.LayoutParams(dp(46), dp(46)))
                     setOnClickListener {
@@ -286,7 +369,7 @@ class MainActivity : Activity() {
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progress = 0
-            progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         val countText = bodyText("0 / 0", 12f, IOS_SECONDARY)
         val etaText = bodyText("", 12f, IOS_SECONDARY)
@@ -335,6 +418,8 @@ class MainActivity : Activity() {
         start.setOnClickListener {
             if (scanner.isRunning()) {
                 scanner.stop()
+                setKeepScreenOn(false)
+                performClickHaptic()
                 activeCard.visibility = View.GONE
                 start.text = categoryButtonTitle(selectedCategory)
                 setScanConfigurationEnabled(true)
@@ -356,6 +441,8 @@ class MainActivity : Activity() {
             }
 
             status.text = "Iniciando " + codes.size + " códigos mediante " + active.name
+            performClickHaptic()
+            setKeepScreenOn(true)
             progress.progress = 0
             etaText.text = ""
             activeCard.visibility = View.VISIBLE
@@ -379,10 +466,14 @@ class MainActivity : Activity() {
                     pause.text = if (p.paused) "▶" else "Ⅱ"
                     status.text = when {
                         p.code == null -> {
-                            activeCard.visibility = View.GONE
+                            setKeepScreenOn(false)
+                            performSuccessHaptic()
                             start.text = categoryButtonTitle(selectedCategory)
                             setScanConfigurationEnabled(true)
-                            "Barrido terminado."
+                            progress.progress = 1000
+                            currentCode.text = "BARRIDO COMPLETADO"
+                            carrierText.text = "Últimos candidatos disponibles"
+                            "Barrido terminado. Pulsa «FUNCIONÓ» si alguno de los últimos códigos respondió."
                         }
                         p.error != null -> "Código " + p.index + "/" + p.total + " · " + p.error
                         else -> "Código " + p.index + "/" + p.total + " · " +
@@ -422,6 +513,7 @@ class MainActivity : Activity() {
             if (candidates.isEmpty()) {
                 toast("Todavía no hay candidatos recientes.")
             } else {
+                performSuccessHaptic()
                 scanner.pause()
                 showCodeChooser("¿Qué código funcionó?", candidates) { code ->
                     store.addWorked(selectedCategory, code)
@@ -459,7 +551,7 @@ class MainActivity : Activity() {
         val onlineCard = card(18).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(bodyText("◎", 30f, IOS_RED), LinearLayout.LayoutParams(dp(42), dp(48)))
+            addView(bodyText("◎", 30f, CYBER_CYAN), LinearLayout.LayoutParams(dp(42), dp(48)))
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(bodyText("Biblioteca IR online", 16f, Color.WHITE, Typeface.BOLD))
@@ -480,7 +572,11 @@ class MainActivity : Activity() {
             setHintTextColor(IOS_SECONDARY)
             textSize = 15f
             setSingleLine(true)
-            background = roundedDrawable(IOS_SURFACE, 12, IOS_BORDER)
+            background = cyberPanelDrawable(
+                Color.rgb(8, 12, 18),
+                12,
+                Color.argb(135, 0, 229, 255)
+            )
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         body.addView(search, spacedMatch(12))
@@ -630,7 +726,7 @@ class MainActivity : Activity() {
             ).apply {
                 max = 1000
                 progress = 0
-                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+                progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             }
             val count = bodyText(
                 "0 / " + powerCodes.size,
@@ -681,6 +777,8 @@ class MainActivity : Activity() {
             start.setOnClickListener {
                 if (scanner.isRunning()) {
                     scanner.stop()
+                    setKeepScreenOn(false)
+                    performClickHaptic()
                     setRunningUi(false)
                     status.text = "Barrido de " + brand + " detenido."
                     return@setOnClickListener
@@ -693,6 +791,8 @@ class MainActivity : Activity() {
                 }
 
                 progress.progress = 0
+                performClickHaptic()
+                setKeepScreenOn(true)
                 count.text = "0 / " + powerCodes.size
                 current.text = "Iniciando " + brand + "…"
                 frequency.text = ""
@@ -715,6 +815,8 @@ class MainActivity : Activity() {
 
                         status.text = when {
                             p.code == null -> {
+                                setKeepScreenOn(false)
+                                performSuccessHaptic()
                                 setRunningUi(false)
                                 "Barrido de " + brand + " terminado."
                             }
@@ -764,6 +866,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
 
+                performSuccessHaptic()
                 scanner.pause()
                 pause.text = "▶"
                 showCodeChooser(
@@ -858,9 +961,10 @@ class MainActivity : Activity() {
                     textSize = 12f
                     typeface = Typeface.DEFAULT_BOLD
                     gravity = Gravity.CENTER
-                    setTextColor(if (letter == selectedLetter) Color.WHITE else IOS_RED)
+                    setTextColor(if (letter == selectedLetter) Color.WHITE else CYBER_CYAN)
                     background = if (letter == selectedLetter)
-                        roundedDrawable(IOS_RED, 8) else roundedDrawable(Color.TRANSPARENT, 8)
+                        cyberGradientDrawable(intArrayOf(CYBER_PURPLE, CYBER_MAGENTA), 8)
+                    else roundedDrawable(Color.TRANSPARENT, 8)
                     setOnClickListener {
                         stopBrandScanForNavigation()
                         selectedLetter = letter
@@ -956,6 +1060,7 @@ class MainActivity : Activity() {
         searchCard.addView(model, spacedMatch(10))
 
         var reloadBrands: (() -> Unit)? = null
+        var brandLoadGeneration = 0L
         val sourceControl = segmentedControl(
             listOf("Todas", "Flipper", "Oficial", "IRDB"),
             sourceIndex
@@ -968,7 +1073,7 @@ class MainActivity : Activity() {
         val deep = CheckBox(this).apply {
             text = "Búsqueda profunda"
             setTextColor(Color.WHITE)
-            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            buttonTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         searchCard.addView(deep, spacedMatch(8))
         val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
@@ -1105,8 +1210,11 @@ class MainActivity : Activity() {
                 for (i in 0 until letterHost.childCount) {
                     val v = letterHost.getChildAt(i) as TextView
                     val active = v.text.toString() == selectedLetter
-                    v.setTextColor(if (active) Color.WHITE else IOS_RED)
-                    v.background = if (active) roundedDrawable(IOS_RED, 8)
+                    v.setTextColor(if (active) Color.WHITE else CYBER_CYAN)
+                    v.background = if (active) cyberGradientDrawable(
+                        intArrayOf(CYBER_PURPLE, CYBER_MAGENTA),
+                        8
+                    )
                     else roundedDrawable(Color.TRANSPARENT, 8)
                 }
             }
@@ -1137,6 +1245,8 @@ class MainActivity : Activity() {
         }
 
         reloadBrands = {
+            brandLoadGeneration += 1
+            val loadGeneration = brandLoadGeneration
             brandStatus.text = "Actualizando marcas…"
             brandBrowser.removeAllViews()
             val categorySnapshot = selectedCategory
@@ -1145,6 +1255,7 @@ class MainActivity : Activity() {
                 val loaded = runCatching { onlineLibrary.brands(categorySnapshot, sourcesSnapshot) }
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
+                    if (loadGeneration != brandLoadGeneration) return@runOnUiThread
                     loaded.onSuccess(::renderBrands).onFailure {
                         brandStatus.text = "No se pudo cargar"
                         brandBrowser.removeAllViews()
@@ -1255,7 +1366,7 @@ class MainActivity : Activity() {
         val guided = CheckBox(this).apply {
             text = "Aprendizaje guiado"
             setTextColor(Color.WHITE)
-            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            buttonTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             isChecked = guidedLearning
         }
         studioTools.addView(guided)
@@ -1297,7 +1408,7 @@ class MainActivity : Activity() {
             ).apply {
                 max = buttons.size.coerceAtLeast(1)
                 progress = safeIndex
-                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+                progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             }
             guidedCard.addView(guidedProgress, matchWrap())
             body.addView(guidedCard, spacedMatch(14))
@@ -1311,7 +1422,7 @@ class MainActivity : Activity() {
             addView(bodyText("●  Entrada de audio", 16f, Color.WHITE, Typeface.BOLD),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(bodyText(if (inputInfo.isExternal) "✓" else "✕", 22f,
-                if (inputInfo.isExternal) IOS_GREEN else IOS_RED))
+            if (inputInfo.isExternal) IOS_GREEN else CYBER_DANGER))
         }
         inputCard.addView(inputHeader, spacedMatch(6))
         inputCard.addView(bodyText(inputInfo.description, 14f, Color.LTGRAY), spacedMatch(4))
@@ -1319,7 +1430,7 @@ class MainActivity : Activity() {
             if (inputInfo.isExternal) "Entrada externa detectada"
             else "Entrada interna: este dispositivo no puede aprender IR",
             12f,
-            if (inputInfo.isExternal) IOS_GREEN else IOS_RED,
+            if (inputInfo.isExternal) IOS_GREEN else CYBER_DANGER,
             Typeface.BOLD
         ), spacedMatch(8))
         val checkInput = outlineButton("⌁  Comprobar entrada")
@@ -1751,9 +1862,9 @@ class MainActivity : Activity() {
         route.addView(bodyText("⌁  " + transmitter.active().name, 15f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         route.addView(bodyText(transmitter.diagnostics(), 13f, IOS_SECONDARY), spacedMatch(10))
         route.addView(divider(), spacedMatch(10))
-        route.addView(bodyText("✓  Audio mono: DESACTIVADO", 14f, Color.LTGRAY), spacedMatch(6))
-        route.addView(bodyText("≡  Balance: centrado", 14f, Color.LTGRAY), spacedMatch(6))
-        route.addView(bodyText("🔊  Volumen multimedia: 100 %", 14f, Color.LTGRAY), spacedMatch(8))
+        route.addView(bodyText("◖◗  Recomendado: Audio mono desactivado", 13f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("≡  Recomendado: balance centrado", 13f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("🔊  Recomendado: volumen multimedia al máximo", 13f, Color.LTGRAY), spacedMatch(8))
         val sound = outlineButton("AJUSTES DE SONIDO")
         route.addView(sound)
         sound.setOnClickListener { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
@@ -1840,7 +1951,7 @@ class MainActivity : Activity() {
         }
         val oledToggle = Switch(this).apply {
             isChecked = oledMode()
-            thumbTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            thumbTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         oledRow.addView(oledToggle)
         oled.addView(oledRow, spacedMatch(8))
@@ -1851,7 +1962,7 @@ class MainActivity : Activity() {
             IOS_SECONDARY
         )
         oled.addView(oledDescription, spacedMatch(8))
-        oled.addView(bodyText("●   ●   ●   Negro real · superficies mínimas · acento rojo", 11f, IOS_SECONDARY))
+        oled.addView(bodyText("◉  BLACKOUT MODE · negro real · neón cian/magenta", 11f, CYBER_CYAN))
         body.addView(oled, spacedMatch(14))
         oledToggle.setOnCheckedChangeListener { _, enabled ->
             preferences.edit().putBoolean(PREF_OLED_MODE, enabled).apply()
@@ -1900,6 +2011,10 @@ class MainActivity : Activity() {
         val availableVersion = bodyText("", 13f, IOS_GREEN, Typeface.BOLD).apply {
             visibility = View.GONE
         }
+        val releaseNotes = bodyText("", 12f, IOS_SECONDARY).apply {
+            visibility = View.GONE
+            setPadding(0, dp(2), 0, dp(6))
+        }
         val updateStatus = infoText(
             "Comprueba GitHub Releases para saber si hay una APK más reciente."
         ).apply { setPadding(0, 0, 0, dp(8)) }
@@ -1908,6 +2023,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         updates.addView(availableVersion, spacedMatch(6))
+        updates.addView(releaseNotes, spacedMatch(4))
         updates.addView(updateStatus, spacedMatch(8))
         updates.addView(checkUpdate, spacedMatch(8))
         updates.addView(downloadUpdate)
@@ -1929,9 +2045,18 @@ class MainActivity : Activity() {
                         availableVersion.text =
                             "Disponible: " + updater.releaseLabel(result.release)
                         availableVersion.visibility = View.VISIBLE
+                        val notes = result.release.notes
+                            .lines()
+                            .map { it.trim().removePrefix("-").trim() }
+                            .filter { it.isNotBlank() }
+                            .take(6)
+                            .joinToString("\n• ", prefix = if (result.release.notes.isBlank()) "" else "• ")
+                        releaseNotes.text = notes
+                        releaseNotes.visibility = if (notes.isBlank()) View.GONE else View.VISIBLE
                         downloadUpdate.visibility = View.VISIBLE
                     } else {
                         availableVersion.visibility = View.GONE
+                        releaseNotes.visibility = View.GONE
                         downloadUpdate.visibility = View.GONE
                     }
                 }
@@ -2100,17 +2225,20 @@ class MainActivity : Activity() {
 
     private fun sendAsync(code: IrCode, status: TextView, screen: Long = screenGeneration) {
         val active = transmitter.active()
+        performClickHaptic()
         status.text = "Enviando " + code.displayName + " mediante " + active.name + "…"
         worker.execute {
             val result = runCatching { active.send(code) }
             runOnUiThread {
                 if (!isScreenActive(screen)) return@runOnUiThread
                 result.onSuccess {
+                    performSuccessHaptic()
                     status.text = "Enviado: " + code.displayName + " · " + code.effectiveCarrierHz + " Hz"
                     if (status.parent == null) {
                         toast("Enviado: " + code.displayName)
                     }
                 }.onFailure {
+                    performErrorHaptic()
                     status.text = "Error: " + (it.message ?: "desconocido")
                     if (status.parent == null) {
                         toast("Error: " + (it.message ?: "desconocido"))
@@ -2255,41 +2383,85 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_MIC && currentTab == 3) {
-            showLearn()
+        if (requestCode == REQUEST_MIC) {
+            when (currentTab) {
+                3 -> showLearn()
+                4 -> showDiagnostics()
+            }
         }
     }
 
     private fun installScreenBody(title: String, onBack: (() -> Unit)? = null): LinearLayout {
+        screenBackAction = onBack
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(screenBackground())
         }
 
         val navigation = FrameLayout(this).apply {
-            setBackgroundColor(screenBackground())
+            background = cyberPanelDrawable(
+                fill = Color.rgb(7, 10, 16),
+                radiusDp = 0,
+                stroke = Color.argb(80, 0, 229, 255)
+            )
+            addView(View(this@MainActivity).apply {
+                background = cyberGradientDrawable(
+                    intArrayOf(CYBER_MAGENTA, CYBER_PURPLE, CYBER_CYAN),
+                    0
+                )
+            }, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(2),
+                Gravity.TOP
+            ))
         }
         val titleView = TextView(this).apply {
-            text = title
-            textSize = 17f
+            text = title.uppercase()
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
             setTextColor(Color.WHITE)
+            letterSpacing = 0.08f
+            setPadding(if (onBack != null) dp(56) else dp(16), 0, dp(116), 0)
         }
         navigation.addView(titleView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(48),
+            dp(54),
             Gravity.CENTER
         ))
+        val active = transmitter.active()
+        val ready = active.isAvailable()
+        val chip = TextView(this).apply {
+            text = if (ready) "IR // READY" else "IR // CHECK"
+            textSize = 9f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            setTextColor(if (ready) CYBER_GREEN else CYBER_WARNING)
+            background = cyberPanelDrawable(
+                fill = Color.argb(24, 0, 229, 255),
+                radiusDp = 10,
+                stroke = if (ready) Color.argb(150, 57, 255, 136)
+                    else Color.argb(160, 255, 176, 32)
+            )
+        }
+        navigation.addView(chip, FrameLayout.LayoutParams(
+            dp(96),
+            dp(26),
+            Gravity.END or Gravity.CENTER_VERTICAL
+        ).apply { marginEnd = dp(12) })
         if (onBack != null) {
             val back = TextView(this).apply {
                 text = "‹"
                 textSize = 34f
                 gravity = Gravity.CENTER
-                setTextColor(IOS_RED)
+                setTextColor(CYBER_CYAN)
                 setPadding(dp(6), 0, dp(8), 0)
                 isClickable = true
-                setOnClickListener { onBack() }
+                setOnClickListener {
+                    performClickHaptic()
+                    onBack()
+                }
             }
             navigation.addView(back, FrameLayout.LayoutParams(
                 dp(48),
@@ -2299,12 +2471,12 @@ class MainActivity : Activity() {
         }
         page.addView(navigation, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(48)
+            dp(54)
         ))
 
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(28))
+            setPadding(dp(14), dp(12), dp(14), dp(30))
             setBackgroundColor(screenBackground())
         }
         val scroll = ScrollView(this).apply {
@@ -2326,6 +2498,7 @@ class MainActivity : Activity() {
 
     private fun beginScreen(): Long {
         scanner.stop()
+        setKeepScreenOn(false)
         screenGeneration += 1
         return screenGeneration
     }
@@ -2364,20 +2537,22 @@ class MainActivity : Activity() {
 
     private fun sectionHeader(value: String) = bodyText(
         value,
-        18f,
+        16f,
         Color.WHITE,
         Typeface.BOLD
     ).apply {
-        setPadding(dp(2), dp(6), dp(2), dp(10))
+        letterSpacing = 0.05f
+        setPadding(dp(3), dp(8), dp(2), dp(10))
+        compoundDrawablePadding = dp(7)
     }
 
     private fun card(radius: Int = 18) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = roundedDrawable(
-            if (oledMode()) IOS_SURFACE else Color.rgb(38, 38, 40),
-            radius,
-            if (oledMode()) IOS_BORDER else Color.rgb(58, 58, 60)
+        background = cyberPanelDrawable(
+            fill = if (oledMode()) CYBER_SURFACE else CYBER_SURFACE_ALT,
+            radiusDp = radius,
+            stroke = if (oledMode()) IOS_BORDER else CYBER_BORDER
         )
     }
 
@@ -2395,24 +2570,52 @@ class MainActivity : Activity() {
             setColor(fillColor)
         }
 
+    private fun cyberPanelDrawable(fill: Int, radiusDp: Int, stroke: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fill)
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1).coerceAtLeast(1), stroke)
+        }
+
+    private fun cyberGradientDrawable(colors: IntArray, radiusDp: Int): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors).apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+
     private fun primaryButton(value: String) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
-        textSize = 14f
+        setTextColor(Color.rgb(3, 16, 20))
+        textSize = 13f
         typeface = Typeface.DEFAULT_BOLD
-        background = roundedDrawable(IOS_RED, 12)
+        letterSpacing = 0.06f
+        background = cyberGradientDrawable(
+            intArrayOf(CYBER_CYAN, Color.rgb(96, 239, 255)),
+            12
+        )
         minHeight = dp(50)
         setPadding(dp(12), dp(11), dp(12), dp(11))
         stateListAnimator = null
+        setOnLongClickListener {
+            performClickHaptic()
+            false
+        }
     }
 
     private fun outlineButton(value: String) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        background = roundedDrawable(Color.argb(12, 255, 255, 255), 12, Color.argb(40, 255, 255, 255))
+        setTextColor(CYBER_CYAN)
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.04f
+        background = cyberPanelDrawable(
+            Color.argb(210, 11, 16, 24),
+            12,
+            Color.argb(160, 0, 229, 255)
+        )
         minHeight = dp(46)
         setPadding(dp(10), dp(9), dp(10), dp(9))
         stateListAnimator = null
@@ -2421,7 +2624,7 @@ class MainActivity : Activity() {
     private fun tintedButton(value: String, tint: Int) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
+        setTextColor(Color.rgb(3, 16, 20))
         textSize = 14f
         typeface = Typeface.DEFAULT_BOLD
         background = roundedDrawable(tint, 12)
@@ -2435,10 +2638,10 @@ class MainActivity : Activity() {
         setHintTextColor(IOS_SECONDARY)
         textSize = 15f
         setSingleLine(true)
-        background = roundedDrawable(
-            if (oledMode()) IOS_SURFACE else Color.rgb(44, 44, 46),
+        background = cyberPanelDrawable(
+            if (oledMode()) Color.rgb(8, 12, 18) else CYBER_SURFACE_ALT,
             12,
-            if (oledMode()) IOS_BORDER else Color.rgb(70, 70, 72)
+            Color.argb(135, 0, 229, 255)
         )
         setPadding(dp(12), dp(11), dp(12), dp(11))
     }
@@ -2452,10 +2655,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(2), dp(2), dp(2), dp(2))
-            background = roundedDrawable(
-                if (oledMode()) Color.argb(12, 255, 255, 255) else Color.rgb(44, 44, 46),
+            background = cyberPanelDrawable(
+                if (oledMode()) Color.rgb(8, 12, 18) else CYBER_SURFACE_ALT,
                 10,
-                if (oledMode()) Color.argb(18, 255, 255, 255) else Color.rgb(68, 68, 70)
+                Color.argb(110, 0, 229, 255)
             )
             tag = selectedIndex.coerceIn(0, (labels.size - 1).coerceAtLeast(0))
         }
@@ -2465,11 +2668,12 @@ class MainActivity : Activity() {
                 textSize = if (labels.size >= 4) 11f else 12f
                 gravity = Gravity.CENTER
                 typeface = Typeface.DEFAULT_BOLD
-                minHeight = dp(34)
+                minHeight = dp(48)
+                contentDescription = label
             }
             row.addView(item, LinearLayout.LayoutParams(
                 0,
-                dp(34),
+                dp(48),
                 1f
             ))
             item.setOnClickListener {
@@ -2507,8 +2711,12 @@ class MainActivity : Activity() {
         for (i in 0 until row.childCount) {
             val item = row.getChildAt(i) as? TextView ?: continue
             val active = i == selected
+            item.isSelected = active
             item.setTextColor(if (active) Color.WHITE else IOS_SECONDARY)
-            item.background = if (active) roundedDrawable(IOS_RED, 8)
+            item.background = if (active) cyberGradientDrawable(
+                intArrayOf(Color.argb(210, 139, 92, 246), Color.argb(225, 255, 43, 214)),
+                8
+            )
             else roundedDrawable(Color.TRANSPARENT, 8)
         }
     }
@@ -2517,7 +2725,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(44)
+            minimumHeight = dp(48)
             setPadding(dp(8), dp(5), dp(6), dp(5))
             addView(bodyText(title, 14f, Color.WHITE), LinearLayout.LayoutParams(
                 0,
@@ -2534,7 +2742,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(24), dp(18), dp(24))
-            addView(bodyText("⌾", 38f, IOS_SECONDARY).apply { gravity = Gravity.CENTER })
+            background = cyberPanelDrawable(
+                Color.argb(150, 10, 14, 21),
+                18,
+                Color.argb(80, 139, 92, 246)
+            )
+            addView(bodyText("⌾", 38f, CYBER_CYAN).apply { gravity = Gravity.CENTER })
             addView(bodyText(title, 17f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(8), 0, dp(6))
@@ -2550,8 +2763,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(4), dp(10), dp(4), dp(10))
-            background = roundedDrawable(IOS_SURFACE, 17, IOS_BORDER)
-            addView(bodyText(glyph, 18f, IOS_RED).apply { gravity = Gravity.CENTER })
+            background = cyberPanelDrawable(CYBER_SURFACE, 17, Color.argb(110, 0, 229, 255))
+            addView(bodyText(glyph, 18f, CYBER_MAGENTA).apply { gravity = Gravity.CENTER })
             addView(bodyText(value.toString(), 20f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(3), 0, dp(2))
@@ -2563,7 +2776,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(bodyText(if (ok) "✓" else "✕", 20f, if (ok) IOS_GREEN else IOS_RED),
+            addView(bodyText(if (ok) "✓" else "✕", 20f, if (ok) IOS_GREEN else CYBER_DANGER),
                 LinearLayout.LayoutParams(dp(34), dp(40)))
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -2573,7 +2786,10 @@ class MainActivity : Activity() {
         }
 
     private fun divider(): View = View(this).apply {
-        setBackgroundColor(Color.argb(25, 255, 255, 255))
+        background = cyberGradientDrawable(
+            intArrayOf(Color.TRANSPARENT, Color.argb(135, 0, 229, 255), Color.TRANSPARENT),
+            0
+        )
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
     }
 
@@ -2581,21 +2797,33 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            val icon = TextView(this@MainActivity).apply {
-                text = categoryGlyph(selectedCategory)
-                textSize = 44f
-                gravity = Gravity.CENTER
-                setTextColor(IOS_RED)
-                background = circleDrawable(Color.argb(40, 255, 59, 48))
+            val core = FrameLayout(this@MainActivity).apply {
+                addView(View(this@MainActivity).apply {
+                    background = circleDrawable(Color.argb(42, 255, 43, 214))
+                }, FrameLayout.LayoutParams(dp(118), dp(118), Gravity.CENTER))
+                addView(View(this@MainActivity).apply {
+                    background = cyberPanelDrawable(
+                        Color.rgb(8, 12, 18),
+                        58,
+                        Color.argb(205, 0, 229, 255)
+                    )
+                }, FrameLayout.LayoutParams(dp(104), dp(104), Gravity.CENTER))
+                addView(TextView(this@MainActivity).apply {
+                    text = categoryGlyph(selectedCategory)
+                    textSize = 42f
+                    gravity = Gravity.CENTER
+                    setTextColor(CYBER_CYAN)
+                }, FrameLayout.LayoutParams(dp(92), dp(92), Gravity.CENTER))
             }
-            addView(icon, LinearLayout.LayoutParams(dp(104), dp(104)))
-            addView(bodyText("TVBGONEANDROID", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+            addView(core, LinearLayout.LayoutParams(dp(122), dp(122)))
+            addView(bodyText("TVBGONE // REMOTE CORE", 10f, CYBER_MAGENTA, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
-                letterSpacing = 0.16f
-                setPadding(0, dp(12), 0, dp(7))
+                letterSpacing = 0.18f
+                setPadding(0, dp(14), 0, dp(6))
             })
-            addView(bodyText(selectedCategory.title, 21f, Color.WHITE, Typeface.BOLD).apply {
+            addView(bodyText(selectedCategory.title.uppercase(), 22f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
+                letterSpacing = 0.04f
             })
             addView(bodyText(categoryExplanation(selectedCategory), 13f, IOS_SECONDARY).apply {
                 gravity = Gravity.CENTER
@@ -2607,8 +2835,11 @@ class MainActivity : Activity() {
     private fun accessoryStatusCard(): View {
         val active = transmitter.active()
         val ready = active.isAvailable()
-        val tint = if (ready) IOS_GREEN else Color.rgb(255, 149, 0)
+        val tint = if (ready) CYBER_GREEN else CYBER_WARNING
         return card(20).apply {
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Estado del accesorio. Abrir diagnóstico"
             val top = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -2635,6 +2866,14 @@ class MainActivity : Activity() {
                 11f,
                 IOS_SECONDARY
             ))
+            addView(bodyText("TOCA PARA ABRIR DIAGNÓSTICO  ›", 10f, CYBER_CYAN, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+                setPadding(0, dp(10), 0, 0)
+            })
+            setOnClickListener {
+                performClickHaptic()
+                selectTab(4)
+            }
         }
     }
 
@@ -2735,7 +2974,33 @@ class MainActivity : Activity() {
     private fun oledMode(): Boolean = preferences.getBoolean(PREF_OLED_MODE, true)
 
     private fun screenBackground(): Int =
-        if (oledMode()) Color.BLACK else Color.rgb(18, 18, 18)
+        if (oledMode()) Color.BLACK else Color.rgb(7, 10, 15)
+
+    private fun setKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun performClickHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
+
+    private fun performSuccessHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        }
+    }
+
+    private fun performErrorHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.REJECT)
+        }
+    }
 
     private fun simpleTextWatcher(action: () -> Unit) = object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -2764,8 +3029,20 @@ class MainActivity : Activity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    @Deprecated("Activity back handling is kept for Android 11 compatibility without extra dependencies.")
+    override fun onBackPressed() {
+        val action = screenBackAction
+        if (action != null) {
+            performClickHaptic()
+            action()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
     override fun onDestroy() {
         screenGeneration += 1
+        setKeepScreenOn(false)
         scanner.close()
         worker.shutdownNow()
         super.onDestroy()

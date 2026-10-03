@@ -4,6 +4,28 @@ Historial de cambios de **TVBGoneAndroid**.
 
 **Compatibilidad:** Android 11 o posterior (`minSdk 30`). El soporte de emisión depende del hardware disponible: blaster IR integrado compatible con `ConsumerIrManager` o adaptador IR estéreo por audio.
 
+## Próxima versión
+
+### Nuevo
+- Apariencia cyberpunk/gamer con interfaz HUD, superficies oscuras y acentos neón cian, magenta, violeta y verde.
+- Estado `IR // READY` / `IR // CHECK` visible en la cabecera de cada pantalla.
+- Feedback háptico para navegación, transmisión, éxito y error.
+- La app recuerda la última pestaña, categoría, región y ritmo de barrido usados.
+- La pantalla permanece activa mientras se ejecuta un barrido IR.
+- Las actualizaciones muestran un resumen de las notas de la release antes de descargar la APK.
+
+### Mejorado
+- Barra inferior, tarjetas, botones, campos, métricas, controles segmentados y estados vacíos rediseñados para mayor contraste y respuesta visual.
+- El estado del accesorio en Control abre Diagnóstico con un toque.
+- El botón/gesto Atrás de Android respeta la navegación interna al entrar en IR Online.
+- Se descartan respuestas antiguas de la carga de marcas online al cambiar rápidamente de fuente.
+- Targets táctiles y estados seleccionados ampliados en los principales controles.
+
+### Corregido
+- Al terminar un barrido universal, la tarjeta permanece visible para poder pulsar `FUNCIONÓ` y elegir entre los últimos candidatos.
+- Diagnóstico se refresca correctamente al conceder el permiso de micrófono.
+- Diagnóstico deja de mostrar como hechos ajustes de audio que la app no puede verificar y los presenta como recomendaciones.
+
 ## 0.1.0-android — 2026-09-23
 
 ### Nuevo
