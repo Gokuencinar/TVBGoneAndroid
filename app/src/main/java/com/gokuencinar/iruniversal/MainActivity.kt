@@ -1771,7 +1771,7 @@ class MainActivity : Activity() {
         val quickActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val newRemote = outlineButton("＋  NUEVO")
         val onlineRemote = outlineButton("◎  ONLINE")
-        val shareRemote = outlineButton("↗  COMPARTIR")
+        val shareRemote = outlineButton("COMPARTIR").apply { textSize = 12f }
         quickActions.addView(newRemote, weighted())
         quickActions.addView(space(dp(7)))
         quickActions.addView(onlineRemote, weighted())
@@ -1854,8 +1854,8 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
                 letterSpacing = 0.14f
             }, spacedMatch(8))
-            val powerButton = key("⏻", power, danger = true).apply {
-                textSize = 30f
+            val powerButton = key("PWR", power, danger = true).apply {
+                textSize = 18f
                 minWidth = dp(76)
                 minHeight = dp(76)
                 background = if (power != null) {
