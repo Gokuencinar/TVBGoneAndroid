@@ -32,6 +32,9 @@ data class CustomRemote(
     val name: String,
     val category: DeviceCategory,
     val buttons: List<CustomRemoteButton>,
+    val brand: String = "",
+    val model: String = "",
+    val sourceDescription: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -100,9 +103,14 @@ class AppStore(context: Context) {
         val raw = prefs.getString("custom_remotes", null) ?: return mutableListOf()
         return runCatching {
             val array = JSONArray(raw)
-            MutableList(array.length()) { index ->
-                remoteFromJson(array.getJSONObject(index))
+            buildList {
+                for (index in 0 until array.length()) {
+                    runCatching { remoteFromJson(array.getJSONObject(index)) }
+                        .getOrNull()
+                        ?.let(::add)
+                }
             }
+                .toMutableList()
         }.getOrDefault(mutableListOf())
     }
 
@@ -274,6 +282,9 @@ class AppStore(context: Context) {
             .put("id", remote.id)
             .put("name", remote.name)
             .put("category", remote.category.name)
+            .put("brand", remote.brand)
+            .put("model", remote.model)
+            .put("sourceDescription", remote.sourceDescription)
             .put("createdAt", remote.createdAt)
             .put("buttons", buttons)
     }
@@ -291,8 +302,13 @@ class AppStore(context: Context) {
         return CustomRemote(
             id = o.optString("id").ifBlank { UUID.randomUUID().toString() },
             name = o.optString("name").ifBlank { "Mi mando" },
-            category = DeviceCategory.valueOf(o.optString("category", DeviceCategory.TELEVISION.name)),
+            category = runCatching {
+                DeviceCategory.valueOf(o.optString("category", DeviceCategory.TELEVISION.name))
+            }.getOrDefault(DeviceCategory.TELEVISION),
             buttons = buttons,
+            brand = o.optString("brand"),
+            model = o.optString("model"),
+            sourceDescription = o.optString("sourceDescription"),
             createdAt = o.optLong("createdAt", System.currentTimeMillis())
         )
     }

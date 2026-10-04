@@ -23,6 +23,8 @@ object IrCodeCatalog {
                     addAll(GeneratedFlipperPowerDatabase.projectors)
                     addAll(GeneratedExtendedIrDatabase.projectorPowerExtras)
                 }
+
+                else -> emptyList()
             }
         )
 
@@ -39,6 +41,8 @@ object IrCodeCatalog {
 
                     DeviceCategory.PROJECTOR ->
                         addAll(GeneratedExtendedIrDatabase.projectorLibrary)
+
+                    else -> Unit
                 }
             }
         )

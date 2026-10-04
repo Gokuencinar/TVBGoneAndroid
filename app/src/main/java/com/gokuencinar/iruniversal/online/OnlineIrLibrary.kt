@@ -44,7 +44,10 @@ class OnlineIrLibrary {
         sources: List<OnlineIrSource> = OnlineIrSource.entries
     ): List<String> {
         val found = mutableListOf<String>()
+        var successfulSources = 0
+        var lastFailure: Throwable? = null
         sources.forEach { source ->
+            if (!sourceSupportsCategory(source, category)) return@forEach
             runCatching {
                 when (source) {
                     OnlineIrSource.FLIPPER_COMMUNITY -> found += brandsFromGitHubTree(
@@ -59,7 +62,14 @@ class OnlineIrLibrary {
                     )
                     OnlineIrSource.LEGACY_IRDB -> found += brandsFromLegacy(category)
                 }
+            }.onSuccess {
+                successfulSources += 1
+            }.onFailure {
+                lastFailure = it
             }
+        }
+        if (sources.isNotEmpty() && successfulSources == 0) {
+            throw lastFailure ?: IllegalStateException("No se pudo acceder a ninguna fuente IR.")
         }
         return found
             .map { it.replace("_", " ").trim() }
@@ -80,7 +90,10 @@ class OnlineIrLibrary {
         if (b.isBlank() && m.isBlank()) return emptyList()
 
         val found = mutableListOf<OnlineIrRemote>()
+        var successfulSources = 0
+        var lastFailure: Throwable? = null
         sources.forEach { source ->
+            if (!sourceSupportsCategory(source, category)) return@forEach
             runCatching {
                 when (source) {
                     OnlineIrSource.FLIPPER_COMMUNITY -> found += searchGitHubTree(
@@ -95,7 +108,14 @@ class OnlineIrLibrary {
                     )
                     OnlineIrSource.LEGACY_IRDB -> found += searchLegacy(b, m, category, deep)
                 }
+            }.onSuccess {
+                successfulSources += 1
+            }.onFailure {
+                lastFailure = it
             }
+        }
+        if (sources.isNotEmpty() && successfulSources == 0) {
+            throw lastFailure ?: IllegalStateException("No se pudo acceder a ninguna fuente IR.")
         }
 
         return found
@@ -103,6 +123,9 @@ class OnlineIrLibrary {
             .sortedWith(compareByDescending<OnlineIrRemote> { it.score }.thenBy { it.displayName.lowercase() })
             .take(120)
     }
+
+    private fun sourceSupportsCategory(source: OnlineIrSource, category: DeviceCategory): Boolean =
+        !(source == OnlineIrSource.FLIPPER_OFFICIAL && category == DeviceCategory.AIR_CONDITIONER)
 
     fun download(remote: OnlineIrRemote): OnlineLoadedRemote {
         val text = fetchText(remote.downloadUrl, 2_000_000)
@@ -218,8 +241,13 @@ class OnlineIrLibrary {
             val parts = path.split("/")
             if (parts.size < 3) return@mapNotNull null
             val candidateBrand = parts[0]
-            val candidateModel = parts[1]
-            if (!legacyCategoryMatches(candidateModel, category) && !deep) return@mapNotNull null
+            val legacyCategory = parts[1]
+            if (!legacyCategoryMatches(legacyCategory, category)) return@mapNotNull null
+            val candidateModel = parts.last()
+                .substringBeforeLast('.')
+                .replace("_", " ")
+                .replace("-", " ")
+                .ifBlank { parts.getOrNull(2).orEmpty() }
 
             val score = matchScore(
                 brand, model, candidateBrand, candidateModel,
@@ -258,6 +286,20 @@ class OnlineIrLibrary {
                 source == OnlineIrSource.FLIPPER_COMMUNITY &&
                     (n.contains(" ac ") || n.contains("air conditioner") || n.contains("acs"))
             DeviceCategory.PROJECTOR -> n.contains("projector")
+            DeviceCategory.SET_TOP_BOX ->
+                n.contains("cable box") || n.contains("set top") || n.contains("dvb t") ||
+                    n.contains("tv tuner") || n.contains("satellite")
+            DeviceCategory.FAN -> n.contains("fans") || n.contains(" fan ")
+            DeviceCategory.MEDIA_BOX ->
+                n.contains("streaming device") || n.contains("multimedia") || n.contains("smart box") ||
+                    n.contains("media box") || n.contains("tv box") || n.contains("android tv")
+            DeviceCategory.DVD_PLAYER -> n.contains("dvd player") || n.contains(" dvd ")
+            DeviceCategory.BLU_RAY -> n.contains("blu ray") || n.contains("bluray")
+            DeviceCategory.AV_RECEIVER ->
+                n.contains("audio and video receiver") || n.contains("av receiver") ||
+                    n.contains("a v receiver") || n.contains("receiver")
+            DeviceCategory.SOUND_BAR -> n.contains("soundbar") || n.contains("sound bar")
+            DeviceCategory.CAMERA -> n.contains("camera") || n.contains("cctv")
         }
     }
 
@@ -267,6 +309,16 @@ class OnlineIrLibrary {
             DeviceCategory.TELEVISION -> n.contains("tv") || n.contains("television")
             DeviceCategory.AIR_CONDITIONER -> n.contains("air") || n == "ac" || n.contains(" ac ")
             DeviceCategory.PROJECTOR -> n.contains("projector")
+            DeviceCategory.SET_TOP_BOX ->
+                n.contains("cable") || n.contains("sat") || n.contains("dvb") || n.contains("tuner") ||
+                    n.contains("set top")
+            DeviceCategory.FAN -> n.contains("fan")
+            DeviceCategory.MEDIA_BOX -> n.contains("stream") || n.contains("media") || n.contains("box")
+            DeviceCategory.DVD_PLAYER -> n.contains("dvd")
+            DeviceCategory.BLU_RAY -> n.contains("blu") || n.contains("bluray")
+            DeviceCategory.AV_RECEIVER -> n.contains("receiver") || n.contains("audio") || n == "av"
+            DeviceCategory.SOUND_BAR -> n.contains("sound") || n.contains("bar")
+            DeviceCategory.CAMERA -> n.contains("camera") || n.contains("cctv")
         }
     }
 
@@ -326,8 +378,8 @@ class OnlineIrLibrary {
     private fun fetchText(url: String, maxBytes: Int): String {
         textCache[url]?.let { return it }
         val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 25_000
+        connection.connectTimeout = 7_000
+        connection.readTimeout = 15_000
         connection.setRequestProperty("User-Agent", "IR-Universal-Android/0.1")
         connection.instanceFollowRedirects = true
 
