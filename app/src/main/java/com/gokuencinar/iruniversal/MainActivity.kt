@@ -2339,29 +2339,128 @@ class MainActivity : Activity() {
 
         val query = oledInput("Buscar marca")
         body.addView(query, spacedMatch(10))
+
+        fun brandInitial(value: String): String {
+            val normalized = java.text.Normalizer.normalize(
+                value.trim(),
+                java.text.Normalizer.Form.NFD
+            )
+            val first = normalized.firstOrNull { it.isLetterOrDigit() } ?: return "#"
+            val upper = first.uppercaseChar()
+            return if (upper in 'A'..'Z') upper.toString() else "#"
+        }
+
+        var selectedInitial: String? = null
+        val initialViews = mutableMapOf<String, TextView>()
+        val initialRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, dp(2), 0)
+        }
+        val initialScroller = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            addView(initialRow, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        body.addView(initialScroller, spacedMatch(8))
+
         val status = infoText("Cargando marcas…")
         body.addView(status, spacedMatch(6))
         val host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(host, spacedMatch(18))
 
         var brands: List<String> = popularRemoteBrands(category)
-        fun render() {
+        lateinit var render: () -> Unit
+
+        fun updateInitialSelector() {
+            val available = brands.map(::brandInitial).toSet()
+            initialViews.forEach { (key, view) ->
+                val selected = if (key == "TODAS") selectedInitial == null else selectedInitial == key
+                val enabled = key == "TODAS" || key in available
+                view.isEnabled = enabled
+                view.alpha = if (enabled) 1f else 0.28f
+                view.setTextColor(if (selected) Color.rgb(3, 16, 20) else CYBER_CYAN)
+                view.background = if (selected) {
+                    roundedDrawable(CYBER_CYAN, 10)
+                } else {
+                    cyberPanelDrawable(
+                        Color.argb(190, 11, 16, 24),
+                        10,
+                        Color.argb(125, 0, 229, 255)
+                    )
+                }
+            }
+        }
+
+        (listOf("TODAS") + ('A'..'Z').map(Char::toString) + "#").forEach { key ->
+            val label = if (key == "TODAS") "Todas" else key
+            val view = TextView(this).apply {
+                text = label
+                textSize = if (key == "TODAS") 11f else 13f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                minWidth = if (key == "TODAS") dp(62) else dp(38)
+                minHeight = dp(38)
+                isClickable = true
+                isFocusable = true
+                contentDescription = if (key == "TODAS") {
+                    "Mostrar todas las marcas"
+                } else {
+                    "Marcas que empiezan por $key"
+                }
+                setOnClickListener {
+                    if (!isEnabled) return@setOnClickListener
+                    performClickHaptic()
+                    selectedInitial = if (key == "TODAS") null else key
+                    updateInitialSelector()
+                    render()
+                }
+            }
+            initialViews[key] = view
+            initialRow.addView(view, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) })
+        }
+
+        render = {
             host.removeAllViews()
             val needle = query.text.toString().trim().lowercase()
-            val filtered = brands.filter { needle.isBlank() || it.lowercase().contains(needle) }
+            val filtered = brands
+                .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                .filter { brand ->
+                    (needle.isBlank() || brand.lowercase().contains(needle)) &&
+                        (selectedInitial == null || brandInitial(brand) == selectedInitial)
+                }
             status.text = when {
                 brands.isEmpty() -> "Cargando marcas…"
                 filtered.isEmpty() -> "No hay marcas que coincidan."
+                selectedInitial != null -> filtered.size.toString() + " marcas · inicial " + selectedInitial
                 else -> filtered.size.toString() + " marcas"
             }
+            var lastInitial: String? = null
             filtered.take(220).forEach { brand ->
+                val initial = brandInitial(brand)
+                if (selectedInitial == null && initial != lastInitial) {
+                    host.addView(bodyText(initial, 11f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                        letterSpacing = 0.12f
+                        setPadding(dp(6), dp(12), 0, dp(5))
+                    })
+                    lastInitial = initial
+                }
                 host.addView(browserRow(brand, "›") { showRemotePairing(category, brand) })
             }
             if (filtered.size > 220) {
                 host.addView(infoText("Mostrando las primeras 220. Escribe parte del nombre para filtrar."))
             }
+            updateInitialSelector()
         }
-        query.addTextChangedListener(simpleTextWatcher(::render))
+        query.addTextChangedListener(simpleTextWatcher { render() })
+        updateInitialSelector()
         render()
         status.text = if (brands.isEmpty()) "Cargando marcas…" else "Marcas populares · cargando catálogo completo…"
 

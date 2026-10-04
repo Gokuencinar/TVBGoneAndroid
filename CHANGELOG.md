@@ -22,6 +22,7 @@ Historial de cambios de **TVBGoneAndroid**.
 - Compartir un mando genera ahora un archivo `.ir` real y temporal con permiso de lectura para la aplicación receptora.
 
 ### Mejorado
+- La lista de marcas de Mando incorpora índice alfabético `A–Z`/`#` tipo Mi Remote, agrupación por inicial y filtrado combinado con el buscador de texto.
 - Tras elegir una marca, Mando prueba primero Encendido/Apagado; `NO` carga el siguiente código y `SÍ` avanza a otro control relevante (volumen, entrada, canal, temperatura, navegación, etc.) antes de confirmar el mando.
 - La pestaña Mando usa layouts específicos por tipo de dispositivo y mantiene controles no reconocidos en `Más controles` para no perder funciones.
 - La carga de marcas/perfiles es progresiva para evitar bloquear la interfaz cuando una fuente online tarda o no está disponible.
