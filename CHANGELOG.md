@@ -8,7 +8,7 @@ Historial de cambios de **TVBGoneAndroid**.
 
 ### Nuevo
 - Apariencia cyberpunk/gamer con interfaz HUD, superficies oscuras y acentos neón cian, magenta, violeta y verde.
-- Asistente de mando tipo Mi Remote: dispositivo → marca → modelo/perfil → probar Power → guardar.
+- Asistente de mando tipo Mi Remote: dispositivo → marca → prueba guiada de códigos con Sí/No → guardar automáticamente el perfil confirmado.
 - Catálogo de mandos ampliado a TV, decodificador, aire acondicionado, ventilador, TV Box/streaming, DVD, Blu-ray, receptor A/V, barra de sonido, proyector y cámara.
 - Marcas populares disponibles de inmediato y catálogo ampliado dinámicamente desde Flipper-IRDB, Flipper IRDB oficial e IRDB Web.
 - Los mandos guardados conservan marca, modelo y origen del perfil cuando proceden del catálogo online.
@@ -22,6 +22,7 @@ Historial de cambios de **TVBGoneAndroid**.
 - Compartir un mando genera ahora un archivo `.ir` real y temporal con permiso de lectura para la aplicación receptora.
 
 ### Mejorado
+- Tras elegir una marca, Mando prueba primero Encendido/Apagado; `NO` carga el siguiente código y `SÍ` avanza a otro control relevante (volumen, entrada, canal, temperatura, navegación, etc.) antes de confirmar el mando.
 - La pestaña Mando usa layouts específicos por tipo de dispositivo y mantiene controles no reconocidos en `Más controles` para no perder funciones.
 - La carga de marcas/perfiles es progresiva para evitar bloquear la interfaz cuando una fuente online tarda o no está disponible.
 - Barra inferior, tarjetas, botones, campos, métricas, controles segmentados y estados vacíos rediseñados para mayor contraste y respuesta visual.

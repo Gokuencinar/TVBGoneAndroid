@@ -95,6 +95,13 @@ class MainActivity : Activity() {
     private val bottomTabViews = mutableListOf<LinearLayout>()
     private var screenBackAction: (() -> Unit)? = null
 
+    private data class RemotePairingCheck(
+        val label: String,
+        val prompt: String,
+        val aliases: List<String> = emptyList(),
+        val power: Boolean = false
+    )
+
     companion object {
         private const val REQUEST_MIC = 1001
         private const val REQUEST_IMPORT_IR = 1002
@@ -2249,7 +2256,7 @@ class MainActivity : Activity() {
                 letterSpacing = 0.08f
             }, spacedMatch(6))
             addView(bodyText(
-                "Selecciona qué quieres controlar. Después podrás elegir marca y modelo/perfil, probarlo y guardarlo como en un mando universal dedicado.",
+                "Selecciona qué quieres controlar. Después elige la marca y prueba códigos uno a uno hasta encontrar el mando que responde.",
                 14f,
                 IOS_SECONDARY
             ))
@@ -2348,7 +2355,7 @@ class MainActivity : Activity() {
                 else -> filtered.size.toString() + " marcas"
             }
             filtered.take(220).forEach { brand ->
-                host.addView(browserRow(brand, "›") { showRemoteAddProfiles(category, brand) })
+                host.addView(browserRow(brand, "›") { showRemotePairing(category, brand) })
             }
             if (filtered.size > 220) {
                 host.addView(infoText("Mostrando las primeras 220. Escribe parte del nombre para filtrar."))
@@ -2389,6 +2396,273 @@ class MainActivity : Activity() {
                     } else {
                         status.text = brands.size.toString() + " marcas · catálogo online no disponible"
                     }
+                }
+            }
+        }
+    }
+
+    private fun showRemotePairing(category: DeviceCategory, brand: String) {
+        val screen = beginScreen()
+        val body = installScreenBody(brand, onBack = { showRemoteAddBrands(category) })
+        body.addView(card(18).apply {
+            addView(bodyText("3  PRUEBA EL MANDO", 12f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+            }, spacedMatch(6))
+            addView(bodyText(category.title + " · " + brand, 17f, Color.WHITE, Typeface.BOLD), spacedMatch(4))
+            addView(bodyText(
+                "Apunta al dispositivo. Si un botón funciona, pulsa Sí para continuar. Si no, pulsa No y probaremos otro código automáticamente.",
+                13f,
+                IOS_SECONDARY
+            ))
+        }, spacedMatch(12))
+
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1
+            progress = 0
+            progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
+        }
+        body.addView(progress, spacedMatch(8))
+
+        val codeStatus = bodyText("Buscando códigos compatibles…", 12f, IOS_SECONDARY).apply {
+            gravity = Gravity.CENTER
+        }
+        body.addView(codeStatus, spacedMatch(10))
+
+        val testCard = card(22).apply {
+            gravity = Gravity.CENTER
+        }
+        val stepLabel = bodyText("PREPARANDO", 11f, CYBER_CYAN, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+            letterSpacing = 0.12f
+        }
+        val stepPrompt = bodyText("Buscando un código para esta marca…", 14f, Color.WHITE, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+        }
+        val test = tintedButton("CARGANDO CÓDIGO…", CYBER_DANGER).apply {
+            isEnabled = false
+            alpha = 0.45f
+            minHeight = dp(76)
+            textSize = 17f
+        }
+        testCard.addView(stepLabel, spacedMatch(8))
+        testCard.addView(stepPrompt, spacedMatch(10))
+        testCard.addView(test, matchWrap())
+        body.addView(testCard, spacedMatch(12))
+
+        val answerPrompt = bodyText("¿Ha respondido el dispositivo?", 13f, IOS_SECONDARY, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+        }
+        body.addView(answerPrompt, spacedMatch(8))
+        val answers = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val no = outlineButton("✕  NO").apply {
+            contentDescription = "No ha funcionado; probar otro código"
+        }
+        val yes = tintedButton("✓  SÍ", IOS_GREEN).apply {
+            contentDescription = "Sí ha funcionado; continuar con otro botón"
+        }
+        answers.addView(no, weighted())
+        answers.addView(space(dp(10)))
+        answers.addView(yes, weighted())
+        body.addView(answers, spacedMatch(8))
+
+        val status = infoText("Cargando perfiles de $brand…")
+        body.addView(status, spacedMatch(10))
+
+        val manual = outlineButton("ELEGIR MODELO / PERFIL MANUALMENTE")
+        body.addView(manual, spacedMatch(18))
+        manual.setOnClickListener { showRemoteAddProfiles(category, brand) }
+
+        var profiles: List<OnlineIrRemote> = emptyList()
+        var candidateIndex = -1
+        var currentRemote: OnlineIrRemote? = null
+        var currentLoaded: OnlineLoadedRemote? = null
+        var checks: List<Pair<RemotePairingCheck, CustomRemoteButton>> = emptyList()
+        var checkIndex = 0
+        lateinit var loadCandidate: (Int) -> Unit
+
+        fun setAnswerEnabled(enabled: Boolean) {
+            no.isEnabled = enabled
+            yes.isEnabled = enabled
+            no.alpha = if (enabled) 1f else 0.42f
+            yes.alpha = if (enabled) 1f else 0.42f
+        }
+
+        fun saveMatchedRemote() {
+            val remote = currentRemote ?: return
+            val loaded = currentLoaded ?: return
+            val buttons = loaded.signals.map { signal ->
+                CustomRemoteButton(name = signal.name, code = signal.code)
+            }
+            val defaultName = if (remote.model.isBlank() || remote.model.equals(brand, true)) {
+                brand
+            } else {
+                brand + " " + remote.model
+            }
+            val custom = CustomRemote(
+                name = defaultName,
+                category = category,
+                buttons = buttons,
+                brand = brand,
+                model = remote.model,
+                sourceDescription = loaded.sourceDescription
+            )
+            store.addRemote(custom)
+            preferences.edit().putString(PREF_REMOTE_ID, custom.id).apply()
+            performSuccessHaptic()
+            toast("Mando encontrado y guardado: " + custom.name)
+            showRemoteControl()
+        }
+
+        fun showCurrentCheck() {
+            val pair = checks.getOrNull(checkIndex)
+            if (pair == null) {
+                saveMatchedRemote()
+                return
+            }
+            val check = pair.first
+            stepLabel.text = "PRUEBA " + (checkIndex + 1) + " DE " + checks.size
+            stepPrompt.text = check.prompt
+            test.text = check.label
+            test.isEnabled = true
+            test.alpha = 1f
+            setAnswerEnabled(false)
+            answerPrompt.text = "Pulsa el botón y confirma si ha funcionado."
+            status.text = if (check.power) {
+                "Prueba el encendido/apagado. Si no responde, cambiaremos al siguiente código de $brand."
+            } else {
+                "El primer código funciona. Verifica ahora otro control para confirmar el mando."
+            }
+        }
+
+        loadCandidate = candidate@{ index ->
+            if (index !in profiles.indices) {
+                candidateIndex = profiles.size
+                currentRemote = null
+                currentLoaded = null
+                checks = emptyList()
+                checkIndex = 0
+                progress.progress = progress.max
+                codeStatus.text = "No quedan más códigos automáticos"
+                stepLabel.text = "SIN COINCIDENCIA"
+                stepPrompt.text = "No hemos encontrado un perfil que responda."
+                test.text = "SIN MÁS CÓDIGOS"
+                test.isEnabled = false
+                test.alpha = 0.42f
+                setAnswerEnabled(false)
+                answerPrompt.text = "Puedes elegir un modelo manualmente o volver a otra marca."
+                status.text = "Probados " + profiles.size + " perfiles de $brand sin confirmación completa."
+                return@candidate
+            }
+
+            candidateIndex = index
+            currentRemote = null
+            currentLoaded = null
+            checks = emptyList()
+            checkIndex = 0
+            progress.max = profiles.size.coerceAtLeast(1)
+            progress.progress = (index + 1).coerceAtMost(progress.max)
+            codeStatus.text = "Código " + (index + 1) + " de " + profiles.size
+            stepLabel.text = "CARGANDO CÓDIGO"
+            stepPrompt.text = "Preparando la siguiente combinación para probar…"
+            test.text = "CARGANDO…"
+            test.isEnabled = false
+            test.alpha = 0.45f
+            setAnswerEnabled(false)
+            status.text = "Preparando código " + (index + 1) + "…"
+
+            val remote = profiles[index]
+            worker.execute {
+                val downloaded = runCatching { onlineLibrary.download(remote) }
+                runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    downloaded.onSuccess { loaded ->
+                        val buttons = loaded.signals.map { signal ->
+                            CustomRemoteButton(name = signal.name, code = signal.code)
+                        }
+                        val resolved = resolveRemotePairingChecks(category, buttons)
+                        if (resolved.isEmpty()) {
+                            status.text = "El código " + (index + 1) + " no tiene controles verificables; probando el siguiente…"
+                            loadCandidate(index + 1)
+                            return@onSuccess
+                        }
+                        currentRemote = remote
+                        currentLoaded = loaded
+                        checks = resolved
+                        checkIndex = 0
+                        showCurrentCheck()
+                    }.onFailure {
+                        status.text = "No se pudo abrir el código " + (index + 1) + "; probando el siguiente…"
+                        loadCandidate(index + 1)
+                    }
+                }
+            }
+        }
+
+        test.setOnClickListener {
+            val pair = checks.getOrNull(checkIndex) ?: return@setOnClickListener
+            test.isEnabled = false
+            test.alpha = 0.65f
+            setAnswerEnabled(false)
+            answerPrompt.text = "Enviando señal…"
+            sendAsync(pair.second.code, status, screen) { success ->
+                if (!isScreenActive(screen)) return@sendAsync
+                test.isEnabled = true
+                test.alpha = 1f
+                if (success) {
+                    setAnswerEnabled(true)
+                    answerPrompt.text = "¿Ha respondido el dispositivo?"
+                } else {
+                    setAnswerEnabled(false)
+                    answerPrompt.text = "No se pudo transmitir. Revisa el emisor y vuelve a probar."
+                }
+            }
+        }
+        no.setOnClickListener {
+            performClickHaptic()
+            status.text = "No funcionó. Buscando el siguiente código de $brand…"
+            loadCandidate(candidateIndex + 1)
+        }
+        yes.setOnClickListener {
+            performSuccessHaptic()
+            checkIndex += 1
+            if (checkIndex < checks.size) {
+                showCurrentCheck()
+            } else {
+                status.text = "Mando confirmado. Guardando perfil…"
+                saveMatchedRemote()
+            }
+        }
+
+        setAnswerEnabled(false)
+        worker.execute {
+            val found = runCatching {
+                onlineLibrary.search(brand, "", category, deep = true)
+            }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                found.onSuccess { values ->
+                    profiles = values.distinctBy { it.id }
+                    if (profiles.isEmpty()) {
+                        codeStatus.text = "Sin códigos automáticos"
+                        stepLabel.text = "SIN PERFILES"
+                        stepPrompt.text = "No hay perfiles compatibles para esta marca."
+                        test.text = "SIN CÓDIGOS"
+                        status.text = "Prueba el selector manual o vuelve a elegir otra marca."
+                        setAnswerEnabled(false)
+                    } else {
+                        status.text = "Encontrados " + profiles.size + " códigos. Empezamos por el más probable."
+                        loadCandidate(0)
+                    }
+                }.onFailure {
+                    codeStatus.text = "Catálogo no disponible"
+                    stepLabel.text = "ERROR DE RED"
+                    stepPrompt.text = "No se pudieron cargar los códigos de esta marca."
+                    test.text = "REINTENTAR"
+                    test.isEnabled = true
+                    test.alpha = 1f
+                    test.setOnClickListener { showRemotePairing(category, brand) }
+                    status.text = "Error: " + (it.message ?: "no se pudo consultar el catálogo")
                 }
             }
         }
@@ -3181,7 +3455,12 @@ class MainActivity : Activity() {
         sendAsync(code, status)
     }
 
-    private fun sendAsync(code: IrCode, status: TextView, screen: Long = screenGeneration) {
+    private fun sendAsync(
+        code: IrCode,
+        status: TextView,
+        screen: Long = screenGeneration,
+        onResult: ((Boolean) -> Unit)? = null
+    ) {
         val active = transmitter.active()
         performClickHaptic()
         status.text = "Enviando " + code.displayName + " mediante " + active.name + "…"
@@ -3192,12 +3471,14 @@ class MainActivity : Activity() {
                 result.onSuccess {
                     performSuccessHaptic()
                     status.text = "Enviado: " + code.displayName + " · " + code.effectiveCarrierHz + " Hz"
+                    onResult?.invoke(true)
                     if (status.parent == null) {
                         toast("Enviado: " + code.displayName)
                     }
                 }.onFailure {
                     performErrorHaptic()
                     status.text = "Error: " + (it.message ?: "desconocido")
+                    onResult?.invoke(false)
                     if (status.parent == null) {
                         toast("Error: " + (it.message ?: "desconocido"))
                     }
@@ -3981,6 +4262,119 @@ class MainActivity : Activity() {
             name == "on" || name == "off" || name.startsWith("power ") ||
             name.startsWith("pwr ") || name.startsWith("turn on") || name.startsWith("turn off") ||
             compact in setOf("poweroff", "poweron", "turnoff", "turnon", "togglepower")
+    }
+
+    private fun remotePairingChecks(category: DeviceCategory): List<RemotePairingCheck> = when (category) {
+        DeviceCategory.TELEVISION -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el televisor?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up", "Subir volumen")
+            ),
+            RemotePairingCheck(
+                "INPUT  CAMBIAR ENTRADA",
+                "¿Cambia la fuente o entrada?",
+                listOf("Input", "Input next", "Source", "Source next", "AV", "Entrada")
+            )
+        )
+        DeviceCategory.SET_TOP_BOX -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el decodificador?", power = true),
+            RemotePairingCheck(
+                "CH +  CANAL SIGUIENTE",
+                "¿Cambia al canal siguiente?",
+                listOf("Channel +", "Channel plus", "Channel up", "Channel next", "Ch +", "Ch plus", "Ch up", "Ch next")
+            ),
+            RemotePairingCheck("OK  CONFIRMAR", "¿Funciona el botón OK?", listOf("OK", "Enter", "Select", "Center"))
+        )
+        DeviceCategory.AIR_CONDITIONER -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el aire acondicionado?", power = true),
+            RemotePairingCheck(
+                "TEMP +  SUBIR TEMPERATURA",
+                "¿Sube la temperatura?",
+                listOf("Temp +", "Temp plus", "Temp up", "Temperature +", "Temperature plus", "Temperature up")
+            ),
+            RemotePairingCheck("MODE  CAMBIAR MODO", "¿Cambia el modo?", listOf("Mode", "Modo", "Cool", "Heat", "Auto"))
+        )
+        DeviceCategory.FAN -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el ventilador?", power = true),
+            RemotePairingCheck(
+                "SPEED +  SUBIR VELOCIDAD",
+                "¿Cambia o sube la velocidad?",
+                listOf("Speed +", "Speed plus", "Speed up", "Fan +", "Fan plus", "Fan up", "Fan speed up")
+            ),
+            RemotePairingCheck("SWING  OSCILACIÓN", "¿Activa o cambia la oscilación?", listOf("Swing", "Swing up", "Oscillate", "Oscillation"))
+        )
+        DeviceCategory.MEDIA_BOX -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el TV Box?", power = true),
+            RemotePairingCheck("HOME  INICIO", "¿Abre la pantalla de inicio?", listOf("Home", "Inicio", "Smart", "Portal")),
+            RemotePairingCheck("OK  CONFIRMAR", "¿Funciona el botón OK?", listOf("OK", "Enter", "Select", "Center"))
+        )
+        DeviceCategory.DVD_PLAYER,
+        DeviceCategory.BLU_RAY -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el reproductor?", power = true),
+            RemotePairingCheck("PLAY  REPRODUCIR", "¿Funciona Reproducir?", listOf("Play", "Play pause", "Playpause")),
+            RemotePairingCheck("MENU  MENÚ", "¿Abre el menú?", listOf("Menu", "Top menu", "Title menu", "Settings"))
+        )
+        DeviceCategory.AV_RECEIVER -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el receptor A/V?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+            ),
+            RemotePairingCheck("INPUT  CAMBIAR ENTRADA", "¿Cambia la entrada?", listOf("Input", "Input next", "Source", "Source next", "AV"))
+        )
+        DeviceCategory.SOUND_BAR -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga la barra de sonido?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+            ),
+            RemotePairingCheck("MUTE  SILENCIO", "¿Activa o quita el silencio?", listOf("Mute", "Silence", "Silencio"))
+        )
+        DeviceCategory.PROJECTOR -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el proyector?", power = true),
+            RemotePairingCheck(
+                "SOURCE  CAMBIAR FUENTE",
+                "¿Cambia la fuente o entrada?",
+                listOf("Source", "Source next", "Input", "Input next", "AV", "Entrada")
+            ),
+            RemotePairingCheck("MENU  MENÚ", "¿Abre el menú?", listOf("Menu", "Settings", "Ajustes"))
+        )
+        DeviceCategory.CAMERA -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga la cámara?", power = true),
+            RemotePairingCheck("SHUTTER  DISPARAR", "¿Dispara la cámara?", listOf("Shutter", "Shoot", "Capture", "Photo")),
+            RemotePairingCheck("ZOOM +  ACERCAR", "¿Acerca el zoom?", listOf("Zoom +", "Zoom plus", "Zoom in", "Tele")),
+            RemotePairingCheck("PLAY  REVISAR", "¿Abre la reproducción o revisión?", listOf("Playback", "Play", "Review"))
+        )
+    }
+
+    private fun resolveRemotePairingChecks(
+        category: DeviceCategory,
+        buttons: List<CustomRemoteButton>
+    ): List<Pair<RemotePairingCheck, CustomRemoteButton>> {
+        val consumed = mutableSetOf<String>()
+        val resolved = mutableListOf<Pair<RemotePairingCheck, CustomRemoteButton>>()
+        for (check in remotePairingChecks(category)) {
+            val button = if (check.power) {
+                buttons.firstOrNull { value -> value.id !in consumed && isPowerButtonName(value.name) }
+            } else {
+                val wanted = check.aliases.map(::normalizedRemoteButtonName)
+                buttons.firstOrNull { value ->
+                    if (value.id in consumed) return@firstOrNull false
+                    val name = normalizedRemoteButtonName(value.name)
+                    wanted.any { alias -> name == alias || name.startsWith("$alias ") }
+                }
+            }
+            if (check.power && button == null && category != DeviceCategory.CAMERA) return emptyList()
+            if (button != null) {
+                consumed += button.id
+                resolved += check to button
+            }
+        }
+        return resolved.take(3)
     }
 
     private fun paceHelp(pace: ScanPace): String = when (pace) {
