@@ -3381,12 +3381,31 @@ class MainActivity : Activity() {
         val credits = card(18)
         credits.addView(
             bodyText("★  Créditos", 16f, Color.WHITE, Typeface.BOLD),
-            spacedMatch(8)
+            spacedMatch(10)
         )
-        credits.addView(
-            bodyText("Gokuencinar", 17f, IOS_RED, Typeface.BOLD),
-            spacedMatch(4)
-        )
+        val creditIdentity = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.credits_avatar)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.TRANSPARENT)
+                }
+                clipToOutline = true
+                contentDescription = "Avatar de Gokuencinar · GokuEn"
+            }, LinearLayout.LayoutParams(dp(54), dp(54)))
+
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, 0, 0)
+                addView(bodyText("Gokuencinar · GokuEn", 17f, CYBER_CYAN, Typeface.BOLD))
+                addView(bodyText("Créditos", 12f, IOS_SECONDARY))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        credits.addView(creditIdentity, spacedMatch(10))
         credits.addView(
             bodyText(
                 "Creador y desarrollador de TVBGoneAudio y TVBGoneAndroid.",
@@ -3404,13 +3423,37 @@ class MainActivity : Activity() {
             ),
             spacedMatch(10)
         )
-        val creditActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val creatorActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val repository = outlineButton("⌁  GOKUENREPO")
+        val coffee = tintedButton("♥  BUY ME A COFFEE", CYBER_MAGENTA).apply { textSize = 12f }
+        creatorActions.addView(repository, weighted())
+        creatorActions.addView(space(dp(10)))
+        creatorActions.addView(coffee, weighted())
+        credits.addView(creatorActions, spacedMatch(10))
+
+        val projectActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val project = outlineButton("GITHUB")
         val licenses = outlineButton("LICENCIAS")
-        creditActions.addView(project, weighted())
-        creditActions.addView(space(dp(10)))
-        creditActions.addView(licenses, weighted())
-        credits.addView(creditActions)
+        projectActions.addView(project, weighted())
+        projectActions.addView(space(dp(10)))
+        projectActions.addView(licenses, weighted())
+        credits.addView(projectActions)
+        repository.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Gokuencinar/GokuEnREPO")
+                )
+            )
+        }
+        coffee.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://buymeacoffee.com/gokuen")
+                )
+            )
+        }
         project.setOnClickListener {
             startActivity(
                 Intent(

@@ -33,6 +33,7 @@ Historial de cambios de **TVBGoneAndroid**.
 - Targets táctiles y estados seleccionados ampliados en los principales controles.
 - Tocar un mando guardado en Equipos abre directamente el nuevo modo de mando completo.
 - La antigua pestaña Diagnóstico pasa a llamarse **Ajustes / Info** y conserva todas las comprobaciones técnicas, copia de seguridad, actualizaciones y créditos.
+- Ajustes / Info adopta el mismo bloque de créditos de los tweaks iOS: avatar circular, `Gokuencinar · GokuEn`, acceso a GokuEnREPO y botón Buy Me a Coffee.
 
 ### Corregido
 - Al terminar un barrido universal, la tarjeta permanece visible para poder pulsar `FUNCIONÓ` y elegir entre los últimos candidatos.
