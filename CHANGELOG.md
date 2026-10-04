@@ -14,7 +14,8 @@ Historial de cambios de **TVBGoneAndroid**.
 - La pantalla permanece activa mientras se ejecuta un barrido IR.
 - Las actualizaciones muestran un resumen de las notas de la release antes de descargar la APK.
 - Nueva pestaña **Mando** con interfaz de mando universal: Power, volumen, canales, mute, entradas, navegación/OK, media, teclado numérico y controles adicionales según las señales disponibles.
-- Los mandos descargados desde la biblioteca online pueden guardarse completos como perfiles reutilizables en la pestaña Mando.
+- Las señales compatibles de los mandos descargados desde la biblioteca online pueden guardarse juntas como perfiles reutilizables en la pestaña Mando.
+- Compartir un mando genera ahora un archivo `.ir` real y temporal con permiso de lectura para la aplicación receptora.
 
 ### Mejorado
 - Barra inferior, tarjetas, botones, campos, métricas, controles segmentados y estados vacíos rediseñados para mayor contraste y respuesta visual.

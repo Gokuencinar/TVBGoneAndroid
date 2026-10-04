@@ -3,6 +3,7 @@ package com.gokuencinar.iruniversal
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -34,6 +35,7 @@ import com.gokuencinar.iruniversal.storage.SavedDevice
 import com.gokuencinar.iruniversal.update.AppRelease
 import com.gokuencinar.iruniversal.update.AppUpdater
 import java.util.concurrent.Executors
+import java.io.File
 
 class MainActivity : Activity() {
     private lateinit var contentHost: FrameLayout
@@ -181,7 +183,7 @@ class MainActivity : Activity() {
         addBottomTab("Códigos", R.drawable.ic_tab_codes, 1)
         addBottomTab("Equipos", R.drawable.ic_tab_star, 2)
         addBottomTab("Aprender", R.drawable.ic_tab_mic, 3)
-        addBottomTab("Ajustes", R.drawable.ic_tab_settings, 4)
+        addBottomTab("Ajustes/Info", R.drawable.ic_tab_settings, 4)
 
         setContentView(root)
         selectTab(currentTab)
@@ -237,7 +239,7 @@ class MainActivity : Activity() {
         }
         val text = TextView(this).apply {
             this.text = label
-            textSize = 10f
+            textSize = if (label.length > 8) 9f else 10f
             gravity = Gravity.CENTER
             setTextColor(IOS_SECONDARY)
             maxLines = 1
@@ -1057,9 +1059,9 @@ class MainActivity : Activity() {
         renderBrowser()
     }
 
-    private fun showOnline() {
+    private fun showOnline(onBack: (() -> Unit) = { showCodes() }) {
         val screen = beginScreen()
-        val body = installScreenBody("IR online") { showCodes() }
+        val body = installScreenBody("IR online", onBack)
 
         var sourceIndex = 0
         val searchCard = card(20)
@@ -1664,8 +1666,7 @@ class MainActivity : Activity() {
 
         fun openOnlineFor(category: DeviceCategory) {
             selectedCategory = category
-            selectTab(1)
-            showOnline()
+            showOnline { showRemoteControl() }
         }
 
         if (remotes.isEmpty()) {
@@ -1679,7 +1680,7 @@ class MainActivity : Activity() {
                     letterSpacing = 0.08f
                 }, spacedMatch(8))
                 addView(bodyText(
-                    "Crea o descarga un mando completo para usar Power, volumen, canales, entradas, cruceta y el resto de botones desde una sola pantalla.",
+                    "Crea o descarga un mando para usar Power, volumen, canales, entradas, cruceta y el resto de botones desde una sola pantalla.",
                     14f,
                     IOS_SECONDARY
                 ).apply {
@@ -1708,7 +1709,7 @@ class MainActivity : Activity() {
 
             body.addView(emptyState(
                 "Consejo",
-                "Los mandos descargados desde la biblioteca online ahora pueden guardarse completos. También puedes aprender o importar botones en la pestaña Aprender."
+                "Las señales compatibles de los mandos descargados online pueden guardarse juntas como un perfil. También puedes aprender o importar botones en la pestaña Aprender."
             ))
             return
         }
@@ -1826,6 +1827,17 @@ class MainActivity : Activity() {
             return found
         }
 
+        fun pickPrefix(vararg aliases: String): CustomRemoteButton? {
+            val wanted = aliases.map(::normalize)
+            val found = remote.buttons.firstOrNull { button ->
+                if (button.id in consumed) return@firstOrNull false
+                val name = normalize(button.name)
+                wanted.any { alias -> name == alias || name.startsWith("$alias ") }
+            }
+            if (found != null) consumed += found.id
+            return found
+        }
+
         fun key(label: String, button: CustomRemoteButton?, danger: Boolean = false): Button {
             val view = if (danger) tintedButton(label, CYBER_DANGER) else outlineButton(label)
             view.contentDescription = if (button == null) "$label, sin código asignado" else "$label, ${button.name}"
@@ -1847,7 +1859,10 @@ class MainActivity : Activity() {
             body.addView(row, spacedMatch(9))
         }
 
-        val power = pick("Power", "Power toggle", "Power on off", "On off", "Encendido", "Apagar")
+        val power = pickPrefix(
+            "Power", "Power toggle", "Power on off", "Power off", "Power on",
+            "On off", "Encendido", "Apagar"
+        )
         val powerCard = card(22).apply {
             gravity = Gravity.CENTER
             addView(bodyText("POWER", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
@@ -1947,11 +1962,14 @@ class MainActivity : Activity() {
                 val play = pick("Play", "Play pause", "Playpause")
                 val pause = pick("Pause")
                 val stop = pick("Stop")
-                val previous = pick("Previous", "Prev", "Rewind", "Back skip")
-                val next = pick("Next", "Forward", "Fast forward", "Skip")
-                if (listOf(play, pause, stop, previous, next).any { it != null }) {
+                val previous = pick("Previous", "Prev", "Skip previous", "Back skip")
+                val next = pick("Next", "Skip next", "Skip")
+                val rewind = pick("Rewind", "Rew", "Reverse")
+                val fastForward = pick("Fast forward", "Fastforward", "FF", "Forward")
+                if (listOf(play, pause, stop, previous, next, rewind, fastForward).any { it != null }) {
                     body.addView(sectionHeader("Media"))
-                    addKeyRow("⏮" to previous, "▶" to play, "Ⅱ" to pause, "■" to stop, "⏭" to next)
+                    addKeyRow("PREV" to previous, "PLAY" to play, "NEXT" to next)
+                    addKeyRow("REW" to rewind, "PAUSE" to pause, "STOP" to stop, "FF" to fastForward)
                 }
 
                 val numbers = (0..9).associateWith { value ->
@@ -2611,10 +2629,25 @@ class MainActivity : Activity() {
         val text = FlipperIrCodec.exportRawRecords(
             remote.buttons.map { it.name to it.code }
         )
+        val safeBase = remote.name
+            .replace(Regex("[^A-Za-z0-9._ -]+"), "_")
+            .trim()
+            .ifBlank { "TVBGoneAndroid-remote" }
+            .take(64)
+        val shareDir = File(cacheDir, "shared-ir").apply { mkdirs() }
+        shareDir.listFiles()?.forEach { it.delete() }
+        val file = File(shareDir, "$safeBase.ir").apply { writeText(text, Charsets.UTF_8) }
+        val uri = Uri.Builder()
+            .scheme("content")
+            .authority("$packageName.irfiles")
+            .appendPath(file.name)
+            .build()
         val share = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
-            putExtra(Intent.EXTRA_TEXT, text)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newUri(contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivity(Intent.createChooser(share, "Compartir mando"))
     }
@@ -2687,7 +2720,7 @@ class MainActivity : Activity() {
                     .setNegativeButton("Cancelar", null)
                     .show()
             }
-            .setNeutralButton("Guardar mando completo") { _, _ ->
+            .setNeutralButton("Guardar como mando") { _, _ ->
                 val remote = CustomRemote(
                     name = remoteName.trim().ifBlank { "Mando importado" },
                     category = category,
@@ -2885,6 +2918,8 @@ class MainActivity : Activity() {
                 setTextColor(CYBER_CYAN)
                 setPadding(dp(6), 0, dp(8), 0)
                 isClickable = true
+                isFocusable = true
+                contentDescription = "Volver"
                 setOnClickListener {
                     performClickHaptic()
                     onBack()
