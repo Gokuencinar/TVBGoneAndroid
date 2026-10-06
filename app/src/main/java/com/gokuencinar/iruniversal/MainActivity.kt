@@ -3,6 +3,7 @@ package com.gokuencinar.iruniversal
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
@@ -15,8 +16,10 @@ import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.*
 import com.gokuencinar.iruniversal.flipper.FlipperIrCodec
 import com.gokuencinar.iruniversal.flipper.ImportedIrSignal
@@ -24,7 +27,9 @@ import com.gokuencinar.iruniversal.ir.*
 import com.gokuencinar.iruniversal.learn.IrLearner
 import com.gokuencinar.iruniversal.learn.IrSignalAnalyzer
 import com.gokuencinar.iruniversal.online.OnlineIrLibrary
+import com.gokuencinar.iruniversal.online.OnlineLoadedRemote
 import com.gokuencinar.iruniversal.online.OnlineIrRemote
+import com.gokuencinar.iruniversal.online.OnlineIrSource
 import com.gokuencinar.iruniversal.storage.AppStore
 import com.gokuencinar.iruniversal.storage.CustomRemote
 import com.gokuencinar.iruniversal.storage.CustomRemoteButton
@@ -32,6 +37,7 @@ import com.gokuencinar.iruniversal.storage.SavedDevice
 import com.gokuencinar.iruniversal.update.AppRelease
 import com.gokuencinar.iruniversal.update.AppUpdater
 import java.util.concurrent.Executors
+import java.io.File
 
 class MainActivity : Activity() {
     private lateinit var contentHost: FrameLayout
@@ -49,13 +55,52 @@ class MainActivity : Activity() {
     private var importedSignals: List<ImportedIrSignal> = emptyList()
     private var screenGeneration = 0L
     private var selectedCategory = DeviceCategory.TELEVISION
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_CATEGORY, value.name).apply()
+            }
+        }
+    private var selectedLearnCategory = DeviceCategory.TELEVISION
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_LEARN_CATEGORY, value.name).apply()
+            }
+        }
     private var selectedRegion = TvRegion.EUROPE
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_REGION, value.name).apply()
+            }
+        }
     private var selectedPace = ScanPace.FAST
+        set(value) {
+            field = value
+            if (::preferences.isInitialized) {
+                preferences.edit().putString(PREF_SCAN_PACE, value.name).apply()
+            }
+        }
     private var selectedLearnCarrierIndex = 0
     private var guidedLearning = false
     private var guidedIndex = 0
     private var currentTab = 0
+        set(value) {
+            field = value.coerceIn(0, 5)
+            if (::preferences.isInitialized) {
+                preferences.edit().putInt(PREF_LAST_TAB, field).apply()
+            }
+        }
     private val bottomTabViews = mutableListOf<LinearLayout>()
+    private var screenBackAction: (() -> Unit)? = null
+
+    private data class RemotePairingCheck(
+        val label: String,
+        val prompt: String,
+        val aliases: List<String> = emptyList(),
+        val power: Boolean = false
+    )
 
     companion object {
         private const val REQUEST_MIC = 1001
@@ -64,11 +109,31 @@ class MainActivity : Activity() {
         private const val PREF_BROWSER_MODE = "irUniversal.localBrowserPresentation"
         private const val PREF_ONLINE_BROWSER_MODE = "irUniversal.onlineBrowserPresentation"
         private const val PREF_OLED_MODE = "irUniversal.oledMode"
-        private val IOS_RED = Color.rgb(255, 59, 48)
-        private val IOS_GREEN = Color.rgb(52, 199, 89)
-        private val IOS_SECONDARY = Color.rgb(142, 142, 147)
-        private val IOS_SURFACE = Color.argb(14, 255, 255, 255)
-        private val IOS_BORDER = Color.argb(20, 255, 255, 255)
+        private const val PREF_CATEGORY = "irUniversal.selectedCategory"
+        private const val PREF_LEARN_CATEGORY = "irUniversal.learnCategory"
+        private const val PREF_REGION = "irUniversal.selectedRegion"
+        private const val PREF_SCAN_PACE = "irUniversal.scanPace"
+        private const val PREF_LAST_TAB = "irUniversal.lastTab"
+        private const val PREF_REMOTE_ID = "irUniversal.remoteControl.selectedRemote"
+
+        private val CYBER_CYAN = Color.rgb(0, 229, 255)
+        private val CYBER_MAGENTA = Color.rgb(255, 43, 214)
+        private val CYBER_PURPLE = Color.rgb(139, 92, 246)
+        private val CYBER_GREEN = Color.rgb(57, 255, 136)
+        private val CYBER_DANGER = Color.rgb(255, 72, 96)
+        private val CYBER_WARNING = Color.rgb(255, 176, 32)
+        private val CYBER_SURFACE = Color.rgb(15, 19, 27)
+        private val CYBER_SURFACE_ALT = Color.rgb(21, 26, 36)
+        private val CYBER_BORDER = Color.rgb(39, 62, 74)
+        private val CYBER_MUTED = Color.rgb(148, 163, 184)
+
+        // Legacy names are kept so the existing UI can inherit the new palette
+        // without duplicating visual logic across every screen.
+        private val IOS_RED = CYBER_MAGENTA
+        private val IOS_GREEN = CYBER_GREEN
+        private val IOS_SECONDARY = CYBER_MUTED
+        private val IOS_SURFACE = Color.argb(210, 15, 19, 27)
+        private val IOS_BORDER = Color.argb(145, 0, 229, 255)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +144,45 @@ class MainActivity : Activity() {
         store = AppStore(this)
         learner = IrLearner(applicationContext)
         preferences = getSharedPreferences("ir_universal_android", MODE_PRIVATE)
+
+        val restoredCategory = runCatching {
+            DeviceCategory.valueOf(
+                preferences.getString(PREF_CATEGORY, DeviceCategory.TELEVISION.name)
+                    ?: DeviceCategory.TELEVISION.name
+            )
+        }.getOrDefault(DeviceCategory.TELEVISION)
+        selectedCategory = restoredCategory.takeIf {
+            it == DeviceCategory.TELEVISION ||
+                it == DeviceCategory.AIR_CONDITIONER ||
+                it == DeviceCategory.PROJECTOR
+        } ?: DeviceCategory.TELEVISION
+        selectedLearnCategory = if (preferences.contains(PREF_LEARN_CATEGORY)) {
+            runCatching {
+                DeviceCategory.valueOf(
+                    preferences.getString(PREF_LEARN_CATEGORY, DeviceCategory.TELEVISION.name)
+                        ?: DeviceCategory.TELEVISION.name
+                )
+            }.getOrDefault(DeviceCategory.TELEVISION)
+        } else {
+            restoredCategory.takeIf {
+                it == DeviceCategory.TELEVISION ||
+                    it == DeviceCategory.AIR_CONDITIONER ||
+                    it == DeviceCategory.PROJECTOR
+            } ?: DeviceCategory.TELEVISION
+        }
+        selectedRegion = runCatching {
+            TvRegion.valueOf(
+                preferences.getString(PREF_REGION, TvRegion.EUROPE.name)
+                    ?: TvRegion.EUROPE.name
+            )
+        }.getOrDefault(TvRegion.EUROPE)
+        selectedPace = runCatching {
+            ScanPace.valueOf(
+                preferences.getString(PREF_SCAN_PACE, ScanPace.FAST.name)
+                    ?: ScanPace.FAST.name
+            )
+        }.getOrDefault(ScanPace.FAST)
+        currentTab = preferences.getInt(PREF_LAST_TAB, 0).coerceIn(0, 5)
 
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
@@ -98,8 +202,12 @@ class MainActivity : Activity() {
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(4), dp(5), dp(4), dp(3))
-            setBackgroundColor(Color.BLACK)
+            setPadding(dp(6), dp(6), dp(6), dp(5))
+            background = cyberPanelDrawable(
+                fill = Color.rgb(7, 10, 16),
+                radiusDp = 0,
+                stroke = Color.argb(110, 0, 229, 255)
+            )
         }
         root.addView(bottomBar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -107,39 +215,58 @@ class MainActivity : Activity() {
         ))
 
         addBottomTab("Control", R.drawable.ic_tab_power, 0)
+        addBottomTab("Mando", R.drawable.ic_tab_remote, 5)
         addBottomTab("Códigos", R.drawable.ic_tab_codes, 1)
-        addBottomTab("Mis equipos", R.drawable.ic_tab_star, 2)
+        addBottomTab("Equipos", R.drawable.ic_tab_star, 2)
         addBottomTab("Aprender", R.drawable.ic_tab_mic, 3)
-        addBottomTab("Diagnóstico", R.drawable.ic_tab_diagnostics, 4)
+        addBottomTab("Ajustes/Info", R.drawable.ic_tab_settings, 4)
 
         setContentView(root)
-        selectTab(0)
+        selectTab(currentTab)
     }
 
     private fun selectTab(index: Int) {
-        currentTab = index.coerceIn(0, 4)
+        currentTab = index.coerceIn(0, 5)
         bottomTabViews.forEachIndexed { itemIndex, item ->
-            val selected = itemIndex == currentTab
-            val color = if (selected) IOS_RED else IOS_SECONDARY
+            val tabIndex = (item.tag as? Int) ?: itemIndex
+            val selected = tabIndex == currentTab
+            item.isSelected = selected
+            val color = if (selected) CYBER_CYAN else IOS_SECONDARY
             (item.getChildAt(0) as? ImageView)?.setColorFilter(color)
             (item.getChildAt(1) as? TextView)?.setTextColor(color)
+            item.background = if (selected) {
+                cyberPanelDrawable(
+                    fill = Color.argb(34, 0, 229, 255),
+                    radiusDp = 12,
+                    stroke = Color.argb(105, 0, 229, 255)
+                )
+            } else {
+                roundedDrawable(Color.TRANSPARENT, 12)
+            }
         }
         when (currentTab) {
             0 -> showControl()
             1 -> showCodes()
             2 -> showSavedDevices()
             3 -> showLearn()
-            else -> showDiagnostics()
+            4 -> showDiagnostics()
+            else -> showRemoteControl()
         }
     }
 
     private fun addBottomTab(label: String, iconRes: Int, index: Int) {
         val item = LinearLayout(this).apply {
+            tag = index
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             isClickable = true
             isFocusable = true
+            contentDescription = label
             setPadding(dp(2), dp(3), dp(2), dp(1))
+            setOnClickListener {
+                performClickHaptic()
+                selectTab(index)
+            }
         }
         val icon = ImageView(this).apply {
             setImageResource(iconRes)
@@ -148,7 +275,7 @@ class MainActivity : Activity() {
         }
         val text = TextView(this).apply {
             this.text = label
-            textSize = 10f
+            textSize = if (label.length > 8) 9f else 10f
             gravity = Gravity.CENTER
             setTextColor(IOS_SECONDARY)
             maxLines = 1
@@ -158,7 +285,6 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ))
-        item.setOnClickListener { selectTab(index) }
         bottomTabViews += item
         bottomBar.addView(item, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
     }
@@ -180,7 +306,7 @@ class MainActivity : Activity() {
                     addView(TextView(this@MainActivity).apply {
                         text = categoryGlyph(device.category)
                         textSize = 22f
-                        setTextColor(IOS_RED)
+                        setTextColor(CYBER_CYAN)
                         gravity = Gravity.CENTER
                     }, LinearLayout.LayoutParams(dp(34), dp(42)))
                     addView(LinearLayout(this@MainActivity).apply {
@@ -191,7 +317,7 @@ class MainActivity : Activity() {
                     addView(TextView(this@MainActivity).apply {
                         text = "⏻"
                         textSize = 24f
-                        setTextColor(IOS_RED)
+                        setTextColor(CYBER_MAGENTA)
                         gravity = Gravity.CENTER
                     }, LinearLayout.LayoutParams(dp(46), dp(46)))
                     setOnClickListener {
@@ -286,7 +412,7 @@ class MainActivity : Activity() {
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progress = 0
-            progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         val countText = bodyText("0 / 0", 12f, IOS_SECONDARY)
         val etaText = bodyText("", 12f, IOS_SECONDARY)
@@ -316,6 +442,9 @@ class MainActivity : Activity() {
         val previous = outlineButton("◀|")
         val pause = outlineButton("Ⅱ")
         val next = outlineButton("|▶")
+        previous.contentDescription = "Código anterior"
+        pause.contentDescription = "Pausar o reanudar barrido"
+        next.contentDescription = "Código siguiente"
         transport.addView(previous, weighted())
         transport.addView(space(dp(8)))
         transport.addView(pause, weighted())
@@ -326,6 +455,14 @@ class MainActivity : Activity() {
         activeCard.addView(worked, matchWrap())
         body.addView(activeCard, spacedMatch(18))
 
+        fun setTransportEnabled(enabled: Boolean) {
+            listOf(previous, pause, next).forEach { control ->
+                control.isEnabled = enabled
+                control.alpha = if (enabled) 1f else 0.42f
+            }
+        }
+        setTransportEnabled(false)
+
         fun setScanConfigurationEnabled(enabled: Boolean) {
             setSegmentEnabled(categoryControl, enabled)
             regionControl?.let { setSegmentEnabled(it, enabled) }
@@ -335,6 +472,8 @@ class MainActivity : Activity() {
         start.setOnClickListener {
             if (scanner.isRunning()) {
                 scanner.stop()
+                setKeepScreenOn(false)
+                performClickHaptic()
                 activeCard.visibility = View.GONE
                 start.text = categoryButtonTitle(selectedCategory)
                 setScanConfigurationEnabled(true)
@@ -350,17 +489,20 @@ class MainActivity : Activity() {
 
             val active = transmitter.active()
             if (!active.isAvailable()) {
-                status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                status.text = "El transmisor seleccionado no está disponible. Revisa Ajustes / Info."
                 activeCard.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
             status.text = "Iniciando " + codes.size + " códigos mediante " + active.name
+            performClickHaptic()
+            setKeepScreenOn(true)
             progress.progress = 0
             etaText.text = ""
             activeCard.visibility = View.VISIBLE
             start.text = "DETENER BARRIDO"
             setScanConfigurationEnabled(false)
+            setTransportEnabled(true)
             scanner.start(codes, selectedPace) { p ->
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
@@ -379,10 +521,15 @@ class MainActivity : Activity() {
                     pause.text = if (p.paused) "▶" else "Ⅱ"
                     status.text = when {
                         p.code == null -> {
-                            activeCard.visibility = View.GONE
+                            setKeepScreenOn(false)
+                            performSuccessHaptic()
                             start.text = categoryButtonTitle(selectedCategory)
                             setScanConfigurationEnabled(true)
-                            "Barrido terminado."
+                            setTransportEnabled(false)
+                            progress.progress = 1000
+                            currentCode.text = "BARRIDO COMPLETADO"
+                            carrierText.text = "Últimos candidatos disponibles"
+                            "Barrido terminado. Pulsa «FUNCIONÓ» si alguno de los últimos códigos respondió."
                         }
                         p.error != null -> "Código " + p.index + "/" + p.total + " · " + p.error
                         else -> "Código " + p.index + "/" + p.total + " · " +
@@ -422,6 +569,7 @@ class MainActivity : Activity() {
             if (candidates.isEmpty()) {
                 toast("Todavía no hay candidatos recientes.")
             } else {
+                performSuccessHaptic()
                 scanner.pause()
                 showCodeChooser("¿Qué código funcionó?", candidates) { code ->
                     store.addWorked(selectedCategory, code)
@@ -459,7 +607,7 @@ class MainActivity : Activity() {
         val onlineCard = card(18).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(bodyText("◎", 30f, IOS_RED), LinearLayout.LayoutParams(dp(42), dp(48)))
+            addView(bodyText("◎", 30f, CYBER_CYAN), LinearLayout.LayoutParams(dp(42), dp(48)))
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(bodyText("Biblioteca IR online", 16f, Color.WHITE, Typeface.BOLD))
@@ -480,7 +628,11 @@ class MainActivity : Activity() {
             setHintTextColor(IOS_SECONDARY)
             textSize = 15f
             setSingleLine(true)
-            background = roundedDrawable(IOS_SURFACE, 12, IOS_BORDER)
+            background = cyberPanelDrawable(
+                Color.rgb(8, 12, 18),
+                12,
+                Color.argb(135, 0, 229, 255)
+            )
             setPadding(dp(12), dp(10), dp(12), dp(10))
         }
         body.addView(search, spacedMatch(12))
@@ -594,6 +746,7 @@ class MainActivity : Activity() {
 
         fun stopBrandScanForNavigation() {
             if (scanner.isRunning()) scanner.stop()
+            setKeepScreenOn(false)
         }
 
         fun addBrandSweep(brand: String) {
@@ -630,7 +783,7 @@ class MainActivity : Activity() {
             ).apply {
                 max = 1000
                 progress = 0
-                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+                progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             }
             val count = bodyText(
                 "0 / " + powerCodes.size,
@@ -672,15 +825,22 @@ class MainActivity : Activity() {
             fun setRunningUi(running: Boolean) {
                 start.text = if (running) "■  DETENER BARRIDO" else "▶  BARRER ESTA MARCA"
                 pause.text = if (scanner.isPaused()) "▶" else "Ⅱ"
+                listOf(previous, pause, next).forEach { control ->
+                    control.isEnabled = running
+                    control.alpha = if (running) 1f else 0.42f
+                }
                 for (i in 0 until paceControl.childCount) {
                     paceControl.getChildAt(i).isEnabled = !running
                     paceControl.getChildAt(i).alpha = if (running) 0.55f else 1f
                 }
             }
+            setRunningUi(false)
 
             start.setOnClickListener {
                 if (scanner.isRunning()) {
                     scanner.stop()
+                    setKeepScreenOn(false)
+                    performClickHaptic()
                     setRunningUi(false)
                     status.text = "Barrido de " + brand + " detenido."
                     return@setOnClickListener
@@ -688,11 +848,13 @@ class MainActivity : Activity() {
 
                 val active = transmitter.active()
                 if (!active.isAvailable()) {
-                    status.text = "El transmisor seleccionado no está disponible. Revisa Diagnóstico."
+                    status.text = "El transmisor seleccionado no está disponible. Revisa Ajustes / Info."
                     return@setOnClickListener
                 }
 
                 progress.progress = 0
+                performClickHaptic()
+                setKeepScreenOn(true)
                 count.text = "0 / " + powerCodes.size
                 current.text = "Iniciando " + brand + "…"
                 frequency.text = ""
@@ -715,6 +877,8 @@ class MainActivity : Activity() {
 
                         status.text = when {
                             p.code == null -> {
+                                setKeepScreenOn(false)
+                                performSuccessHaptic()
                                 setRunningUi(false)
                                 "Barrido de " + brand + " terminado."
                             }
@@ -764,6 +928,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
 
+                performSuccessHaptic()
                 scanner.pause()
                 pause.text = "▶"
                 showCodeChooser(
@@ -858,9 +1023,10 @@ class MainActivity : Activity() {
                     textSize = 12f
                     typeface = Typeface.DEFAULT_BOLD
                     gravity = Gravity.CENTER
-                    setTextColor(if (letter == selectedLetter) Color.WHITE else IOS_RED)
+                    setTextColor(if (letter == selectedLetter) Color.WHITE else CYBER_CYAN)
                     background = if (letter == selectedLetter)
-                        roundedDrawable(IOS_RED, 8) else roundedDrawable(Color.TRANSPARENT, 8)
+                        cyberGradientDrawable(intArrayOf(CYBER_PURPLE, CYBER_MAGENTA), 8)
+                    else roundedDrawable(Color.TRANSPARENT, 8)
                     setOnClickListener {
                         stopBrandScanForNavigation()
                         selectedLetter = letter
@@ -929,9 +1095,9 @@ class MainActivity : Activity() {
         renderBrowser()
     }
 
-    private fun showOnline() {
+    private fun showOnline(onBack: (() -> Unit) = { showCodes() }) {
         val screen = beginScreen()
-        val body = installScreenBody("IR online") { showCodes() }
+        val body = installScreenBody("IR online", onBack)
 
         var sourceIndex = 0
         val searchCard = card(20)
@@ -947,7 +1113,7 @@ class MainActivity : Activity() {
             selectedCategory.ordinal
         ) { index ->
             selectedCategory = DeviceCategory.entries[index]
-            if (isScreenActive(screen)) showOnline()
+            if (isScreenActive(screen)) showOnline(onBack)
         }, spacedMatch(10))
 
         val brand = oledInput("Marca (ej. TD Systems)")
@@ -956,11 +1122,17 @@ class MainActivity : Activity() {
         searchCard.addView(model, spacedMatch(10))
 
         var reloadBrands: (() -> Unit)? = null
+        var brandLoadGeneration = 0L
+        var onlineSearchGeneration = 0L
+        val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
         val sourceControl = segmentedControl(
             listOf("Todas", "Flipper", "Oficial", "IRDB"),
             sourceIndex
         ) { index ->
             sourceIndex = index
+            onlineSearchGeneration += 1
+            searchButton.isEnabled = true
+            searchButton.text = "⌕  BUSCAR CÓDIGOS"
             reloadBrands?.invoke()
         }
         searchCard.addView(sourceControl, spacedMatch(8))
@@ -968,10 +1140,9 @@ class MainActivity : Activity() {
         val deep = CheckBox(this).apply {
             text = "Búsqueda profunda"
             setTextColor(Color.WHITE)
-            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            buttonTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         searchCard.addView(deep, spacedMatch(8))
-        val searchButton = primaryButton("⌕  BUSCAR CÓDIGOS")
         searchCard.addView(searchButton, matchWrap())
         body.addView(searchCard, spacedMatch(14))
 
@@ -992,7 +1163,7 @@ class MainActivity : Activity() {
             if (onlineListMode) 0 else 1
         ) { index ->
             preferences.edit().putString(PREF_ONLINE_BROWSER_MODE, if (index == 0) "list" else "wheel").apply()
-            if (isScreenActive(screen)) showOnline()
+            if (isScreenActive(screen)) showOnline(onBack)
         }, spacedMatch(8))
         brandCard.addView(infoText(
             if (onlineListMode) "Solo aparecen las letras que tienen marcas."
@@ -1048,7 +1219,14 @@ class MainActivity : Activity() {
                             if (!isScreenActive(screen)) return@runOnUiThread
                             loaded.onSuccess { value ->
                                 status.text = value.name + " · " + value.signals.size + " señales"
-                                showImportedSignals(value.signals, selectedCategory)
+                                showImportedSignals(
+                                    value.signals,
+                                    selectedCategory,
+                                    value.name,
+                                    brand = remote.brand,
+                                    model = remote.model,
+                                    sourceDescription = value.sourceDescription
+                                )
                             }.onFailure {
                                 status.text = "Error: " + (it.message ?: "desconocido")
                             }
@@ -1105,8 +1283,11 @@ class MainActivity : Activity() {
                 for (i in 0 until letterHost.childCount) {
                     val v = letterHost.getChildAt(i) as TextView
                     val active = v.text.toString() == selectedLetter
-                    v.setTextColor(if (active) Color.WHITE else IOS_RED)
-                    v.background = if (active) roundedDrawable(IOS_RED, 8)
+                    v.setTextColor(if (active) Color.WHITE else CYBER_CYAN)
+                    v.background = if (active) cyberGradientDrawable(
+                        intArrayOf(CYBER_PURPLE, CYBER_MAGENTA),
+                        8
+                    )
                     else roundedDrawable(Color.TRANSPARENT, 8)
                 }
             }
@@ -1137,6 +1318,8 @@ class MainActivity : Activity() {
         }
 
         reloadBrands = {
+            brandLoadGeneration += 1
+            val loadGeneration = brandLoadGeneration
             brandStatus.text = "Actualizando marcas…"
             brandBrowser.removeAllViews()
             val categorySnapshot = selectedCategory
@@ -1145,6 +1328,7 @@ class MainActivity : Activity() {
                 val loaded = runCatching { onlineLibrary.brands(categorySnapshot, sourcesSnapshot) }
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
+                    if (loadGeneration != brandLoadGeneration) return@runOnUiThread
                     loaded.onSuccess(::renderBrands).onFailure {
                         brandStatus.text = "No se pudo cargar"
                         brandBrowser.removeAllViews()
@@ -1164,6 +1348,8 @@ class MainActivity : Activity() {
             val categorySnapshot = selectedCategory
             val deepSearch = deep.isChecked
             val sourcesSnapshot = selectedSources().toList()
+            onlineSearchGeneration += 1
+            val searchGeneration = onlineSearchGeneration
             status.text = "Consultando bibliotecas IR…"
             searchButton.isEnabled = false
             searchButton.text = "BUSCANDO…"
@@ -1178,6 +1364,7 @@ class MainActivity : Activity() {
                 }
                 runOnUiThread {
                     if (!isScreenActive(screen)) return@runOnUiThread
+                    if (searchGeneration != onlineSearchGeneration) return@runOnUiThread
                     searchButton.isEnabled = true
                     searchButton.text = "⌕  BUSCAR CÓDIGOS"
                     found.onSuccess {
@@ -1202,7 +1389,12 @@ class MainActivity : Activity() {
                     importButton.isEnabled = true
                     loaded.onSuccess { value ->
                         importStatus.text = value.name + " · " + value.signals.size + " señales"
-                        showImportedSignals(value.signals, selectedCategory)
+                        showImportedSignals(
+                            value.signals,
+                            selectedCategory,
+                            value.name,
+                            sourceDescription = value.sourceDescription
+                        )
                     }.onFailure {
                         importStatus.text = "Error: " + (it.message ?: "desconocido")
                     }
@@ -1232,13 +1424,29 @@ class MainActivity : Activity() {
         }
         body.addView(intro, spacedMatch(14))
 
-        body.addView(segmentedControl(
-            listOf("TV", "Aire", "Proyector"),
-            selectedCategory.ordinal
-        ) { index ->
-            selectedCategory = DeviceCategory.entries[index]
-            if (isScreenActive(screen)) showLearn()
-        }, spacedMatch(14))
+        val learnCategory = outlineButton(
+            categoryGlyph(selectedLearnCategory) + "  " + selectedLearnCategory.title.uppercase() + "  ›"
+        ).apply {
+            contentDescription = "Tipo de mando para aprender: " + selectedLearnCategory.title
+        }
+        body.addView(learnCategory, spacedMatch(14))
+        learnCategory.setOnClickListener {
+            val categories = remoteCatalogCategories()
+            AlertDialog.Builder(this)
+                .setTitle("Tipo de mando")
+                .setSingleChoiceItems(
+                    categories.map { it.title }.toTypedArray(),
+                    categories.indexOf(selectedLearnCategory)
+                ) { dialog, which ->
+                    val category = categories.getOrNull(which) ?: return@setSingleChoiceItems
+                    selectedLearnCategory = category
+                    guidedIndex = 0
+                    dialog.dismiss()
+                    if (isScreenActive(screen)) showLearn()
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+        }
 
         val learnedNow = store.loadLearned()
         val studioTools = card(18)
@@ -1255,14 +1463,14 @@ class MainActivity : Activity() {
         val guided = CheckBox(this).apply {
             text = "Aprendizaje guiado"
             setTextColor(Color.WHITE)
-            buttonTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            buttonTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             isChecked = guidedLearning
         }
         studioTools.addView(guided)
         body.addView(studioTools, spacedMatch(14))
         importButton.setOnClickListener { openIrFilePicker() }
         remoteButton.setOnClickListener {
-            showRemoteBuilderDialog(selectedCategory)
+            showRemoteBuilderDialog(selectedLearnCategory)
         }
         guided.setOnCheckedChangeListener { _, enabled ->
             guidedLearning = enabled
@@ -1271,7 +1479,7 @@ class MainActivity : Activity() {
         }
 
         if (guidedLearning) {
-            val buttons = guidedButtonNames(selectedCategory)
+            val buttons = guidedButtonNames(selectedLearnCategory)
             val safeIndex = guidedIndex.coerceIn(0, (buttons.size - 1).coerceAtLeast(0))
             val guidedCard = card(18)
             guidedCard.addView(
@@ -1297,7 +1505,7 @@ class MainActivity : Activity() {
             ).apply {
                 max = buttons.size.coerceAtLeast(1)
                 progress = safeIndex
-                progressTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+                progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
             }
             guidedCard.addView(guidedProgress, matchWrap())
             body.addView(guidedCard, spacedMatch(14))
@@ -1311,7 +1519,7 @@ class MainActivity : Activity() {
             addView(bodyText("●  Entrada de audio", 16f, Color.WHITE, Typeface.BOLD),
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             addView(bodyText(if (inputInfo.isExternal) "✓" else "✕", 22f,
-                if (inputInfo.isExternal) IOS_GREEN else IOS_RED))
+            if (inputInfo.isExternal) IOS_GREEN else CYBER_DANGER))
         }
         inputCard.addView(inputHeader, spacedMatch(6))
         inputCard.addView(bodyText(inputInfo.description, 14f, Color.LTGRAY), spacedMatch(4))
@@ -1319,7 +1527,7 @@ class MainActivity : Activity() {
             if (inputInfo.isExternal) "Entrada externa detectada"
             else "Entrada interna: este dispositivo no puede aprender IR",
             12f,
-            if (inputInfo.isExternal) IOS_GREEN else IOS_RED,
+            if (inputInfo.isExternal) IOS_GREEN else CYBER_DANGER,
             Typeface.BOLD
         ), spacedMatch(8))
         val checkInput = outlineButton("⌁  Comprobar entrada")
@@ -1388,7 +1596,7 @@ class MainActivity : Activity() {
             ), spacedMatch(10))
             val signalName = oledInput("Nombre del botón").apply {
                 val suggested = if (guidedLearning) {
-                    guidedButtonNames(selectedCategory)
+                    guidedButtonNames(selectedLearnCategory)
                         .getOrElse(guidedIndex) { "Power" }
                 } else {
                     "Power"
@@ -1401,7 +1609,7 @@ class MainActivity : Activity() {
                 val quickName = outlineButton("✓  ELEGIR NOMBRE RÁPIDO")
                 resultCard.addView(quickName, spacedMatch(10))
                 quickName.setOnClickListener {
-                    val names = guidedButtonNames(selectedCategory)
+                    val names = guidedButtonNames(selectedLearnCategory)
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Nombre del botón")
                         .setItems(names.toTypedArray()) { _, which ->
@@ -1426,14 +1634,14 @@ class MainActivity : Activity() {
                 val name = signalName.text.toString().trim().ifBlank { "Power" }
                 val storedCode = code.copy(
                     id = "learned:" + name.replace(":", "_") + ":" +
-                        selectedCategory.name + ":" + java.util.UUID.randomUUID()
+                        selectedLearnCategory.name + ":" + java.util.UUID.randomUUID()
                 )
                 val learned = store.loadLearned()
                 learned += storedCode
                 store.saveLearned(learned)
                 learnedCandidate = storedCode
                 toast("Guardado: " + name)
-                advanceGuidedLearning(selectedCategory)
+                advanceGuidedLearning(selectedLearnCategory)
                 if (isScreenActive(screen)) showLearn()
             }
         }
@@ -1515,6 +1723,1218 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showRemoteControl() {
+        val screen = beginScreen()
+        val body = installScreenBody("Mando universal")
+        val remotes = store.loadRemotes()
+
+        if (remotes.isEmpty()) {
+            val hero = card(22).apply {
+                gravity = Gravity.CENTER
+                addView(bodyText("▤", 44f, CYBER_CYAN, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                }, spacedMatch(8))
+                addView(bodyText("REMOTE DECK // SIN PERFIL", 13f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                    letterSpacing = 0.08f
+                }, spacedMatch(8))
+                addView(bodyText(
+                    "Crea o descarga un mando para usar Power, volumen, canales, entradas, cruceta y el resto de botones desde una sola pantalla.",
+                    14f,
+                    IOS_SECONDARY
+                ).apply {
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                })
+            }
+            body.addView(hero, spacedMatch(16))
+
+            val addRemote = primaryButton("＋  AÑADIR MANDO")
+            val learned = outlineButton("⌁  CREAR DESDE IR APRENDIDO")
+            body.addView(addRemote, spacedMatch(10))
+            body.addView(learned, spacedMatch(16))
+            addRemote.setOnClickListener { showRemoteAddDeviceTypes() }
+            learned.setOnClickListener { showLearnedRemoteCategoryChooser() }
+
+            body.addView(emptyState(
+                "Consejo",
+                "Las señales compatibles de los mandos descargados online pueden guardarse juntas como un perfil. También puedes aprender o importar botones en la pestaña Aprender."
+            ))
+            return
+        }
+
+        val preferredId = preferences.getString(PREF_REMOTE_ID, null)
+        val remote = remotes.firstOrNull { it.id == preferredId } ?: remotes.first()
+        if (preferredId != remote.id) {
+            preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+        }
+
+        val header = card(20).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = categoryGlyph(remote.category)
+                textSize = 26f
+                gravity = Gravity.CENTER
+                setTextColor(CYBER_CYAN)
+                background = circleDrawable(Color.argb(34, 0, 229, 255))
+            }, LinearLayout.LayoutParams(dp(54), dp(54)))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, dp(8), 0)
+                addView(bodyText(remote.name, 18f, Color.WHITE, Typeface.BOLD))
+                val catalogMeta = listOf(remote.brand, remote.model)
+                    .filter { it.isNotBlank() }
+                    .distinctBy { it.lowercase() }
+                    .joinToString(" · ")
+                if (catalogMeta.isNotBlank()) {
+                    addView(bodyText(catalogMeta, 11f, CYBER_CYAN, Typeface.BOLD))
+                }
+                addView(bodyText(
+                    remote.category.title + " · " + remote.buttons.size + " botones",
+                    12f,
+                    IOS_SECONDARY
+                ))
+                addView(bodyText("REMOTE // ACTIVE", 10f, CYBER_GREEN, Typeface.BOLD).apply {
+                    letterSpacing = 0.08f
+                    setPadding(0, dp(4), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(bodyText("⌄", 26f, CYBER_CYAN, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(dp(42), dp(48)))
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Cambiar mando. Seleccionado: " + remote.name
+            setOnClickListener {
+                performClickHaptic()
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Seleccionar mando")
+                    .setSingleChoiceItems(
+                        remotes.map { it.name + " · " + it.category.shortTitle }.toTypedArray(),
+                        remotes.indexOfFirst { it.id == remote.id }
+                    ) { dialog, which ->
+                        val selected = remotes.getOrNull(which) ?: return@setSingleChoiceItems
+                        preferences.edit().putString(PREF_REMOTE_ID, selected.id).apply()
+                        dialog.dismiss()
+                        if (isScreenActive(screen)) showRemoteControl()
+                    }
+                    .setNegativeButton("Cancelar", null)
+                    .show()
+            }
+        }
+        body.addView(header, spacedMatch(12))
+
+        val quickActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val newRemote = outlineButton("＋  NUEVO")
+        val onlineRemote = outlineButton("◎  CATÁLOGO")
+        val shareRemote = outlineButton("COMPARTIR").apply { textSize = 12f }
+        quickActions.addView(newRemote, weighted())
+        quickActions.addView(space(dp(7)))
+        quickActions.addView(onlineRemote, weighted())
+        quickActions.addView(space(dp(7)))
+        quickActions.addView(shareRemote, weighted())
+        body.addView(quickActions, spacedMatch(14))
+        newRemote.setOnClickListener {
+            showRemoteAddDeviceTypes()
+        }
+        onlineRemote.setOnClickListener { showRemoteAddBrands(remote.category) }
+        shareRemote.setOnClickListener { shareCustomRemote(remote) }
+
+        val status = infoText("Listo · " + transmitter.active().name).apply {
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = cyberPanelDrawable(
+                fill = Color.argb(150, 9, 13, 20),
+                radiusDp = 12,
+                stroke = Color.argb(85, 0, 229, 255)
+            )
+        }
+        body.addView(status, spacedMatch(14))
+
+        val consumed = mutableSetOf<String>()
+
+        fun normalize(value: String): String = value
+            .trim()
+            .lowercase()
+            .replace("á", "a")
+            .replace("é", "e")
+            .replace("í", "i")
+            .replace("ó", "o")
+            .replace("ú", "u")
+            .replace("ü", "u")
+            .replace("ñ", "n")
+            .replace("+", " plus ")
+            .replace("-", " minus ")
+            .replace("_", " ")
+            .replace(Regex("[^a-z0-9 ]+"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        fun pick(vararg aliases: String): CustomRemoteButton? {
+            val wanted = aliases.map(::normalize).toSet()
+            val found = remote.buttons.firstOrNull { button ->
+                button.id !in consumed && normalize(button.name) in wanted
+            }
+            if (found != null) consumed += found.id
+            return found
+        }
+
+        fun pickPrefix(vararg aliases: String): CustomRemoteButton? {
+            val wanted = aliases.map(::normalize)
+            val found = remote.buttons.firstOrNull { button ->
+                if (button.id in consumed) return@firstOrNull false
+                val name = normalize(button.name)
+                wanted.any { alias -> name == alias || name.startsWith("$alias ") }
+            }
+            if (found != null) consumed += found.id
+            return found
+        }
+
+        fun key(label: String, button: CustomRemoteButton?, danger: Boolean = false): Button {
+            val view = if (danger) tintedButton(label, CYBER_DANGER) else outlineButton(label)
+            view.contentDescription = if (button == null) "$label, sin código asignado" else "$label, ${button.name}"
+            view.isEnabled = button != null
+            view.alpha = if (button == null) 0.34f else 1f
+            view.setOnClickListener {
+                val value = button ?: return@setOnClickListener
+                sendAsync(value.code, status, screen)
+            }
+            return view
+        }
+
+        fun addKeyRow(vararg values: Pair<String, CustomRemoteButton?>) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            values.forEachIndexed { index, value ->
+                row.addView(key(value.first, value.second), weighted())
+                if (index < values.lastIndex) row.addView(space(dp(8)))
+            }
+            body.addView(row, spacedMatch(9))
+        }
+
+        val power = pickPrefix(
+            "Power", "Pwr", "Power toggle", "Toggle power", "Power on off", "Power off", "Power on",
+            "Poweroff", "Poweron", "Standby", "Turn off", "Turn on", "Turnoff", "Turnon",
+            "On off", "Encendido", "Apagar"
+        )
+        val powerCard = card(22).apply {
+            gravity = Gravity.CENTER
+            addView(bodyText("POWER", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.14f
+            }, spacedMatch(8))
+            val powerButton = key("PWR", power, danger = true).apply {
+                textSize = 18f
+                minWidth = dp(76)
+                minHeight = dp(76)
+                background = if (power != null) {
+                    circleDrawable(CYBER_DANGER)
+                } else {
+                    circleDrawable(Color.argb(60, 255, 72, 96))
+                }
+            }
+            addView(powerButton, LinearLayout.LayoutParams(dp(76), dp(76)))
+        }
+        body.addView(powerCard, spacedMatch(12))
+
+        when (remote.category) {
+            DeviceCategory.TELEVISION -> {
+                val input = pick("Input", "Input next", "Source", "Source next", "AV", "Entrada")
+                val home = pick("Home", "Inicio", "Smart", "Smart hub")
+                val menu = pick("Menu", "Settings", "Ajustes")
+                addKeyRow("INPUT" to input, "HOME" to home, "MENU" to menu)
+
+                val up = pick("Up", "Arrow up", "Dpad up", "Cursor up", "Arriba")
+                val down = pick("Down", "Arrow down", "Dpad down", "Cursor down", "Abajo")
+                val left = pick("Left", "Arrow left", "Dpad left", "Cursor left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Dpad right", "Cursor right", "Derecha")
+                val ok = pick("OK", "Enter", "Select", "Center", "Centro")
+                val nav = card(22)
+                nav.addView(bodyText("NAVIGATION", 11f, CYBER_CYAN, Typeface.BOLD).apply {
+                    gravity = Gravity.CENTER
+                    letterSpacing = 0.12f
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(space(dp(56)), weighted())
+                    addView(key("▲", up), weighted())
+                    addView(space(dp(56)), weighted())
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(key("◀", left), weighted())
+                    addView(space(dp(8)))
+                    addView(key("OK", ok), weighted())
+                    addView(space(dp(8)))
+                    addView(key("▶", right), weighted())
+                }, spacedMatch(8))
+                nav.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(space(dp(56)), weighted())
+                    addView(key("▼", down), weighted())
+                    addView(space(dp(56)), weighted())
+                })
+                body.addView(nav, spacedMatch(12))
+
+                val volUp = pick("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up", "Volumen plus", "Subir volumen")
+                val volDown = pick("Vol -", "Vol minus", "Vol down", "Vol dn", "Volume minus", "Volume down", "Volumen minus", "Bajar volumen")
+                val chUp = pick("Channel +", "Channel plus", "Channel up", "Channel next", "Ch plus", "Ch up", "Ch next", "Prog plus", "Program plus")
+                val chDown = pick("Channel -", "Channel minus", "Channel down", "Channel prev", "Channel previous", "Ch minus", "Ch down", "Ch prev", "Prog minus", "Program minus")
+                val mute = pick("Mute", "Silence", "Silencio")
+                val rockers = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                fun rocker(title: String, plus: CustomRemoteButton?, minus: CustomRemoteButton?): View =
+                    card(18).apply {
+                        gravity = Gravity.CENTER
+                        addView(bodyText(title, 11f, CYBER_CYAN, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                        }, spacedMatch(7))
+                        addView(key("＋", plus), matchWrap())
+                        addView(bodyText(title, 10f, IOS_SECONDARY, Typeface.BOLD).apply {
+                            gravity = Gravity.CENTER
+                            setPadding(0, dp(6), 0, dp(6))
+                        })
+                        addView(key("−", minus), matchWrap())
+                    }
+                rockers.addView(rocker("VOL", volUp, volDown), weighted())
+                rockers.addView(space(dp(10)))
+                rockers.addView(card(18).apply {
+                    gravity = Gravity.CENTER
+                    addView(bodyText("AUDIO", 11f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                        gravity = Gravity.CENTER
+                    }, spacedMatch(10))
+                    addView(key("MUTE", mute), matchWrap())
+                }, weighted())
+                rockers.addView(space(dp(10)))
+                rockers.addView(rocker("CH", chUp, chDown), weighted())
+                body.addView(rockers, spacedMatch(12))
+
+                val back = pick("Back", "Return", "Exit", "Atras", "Volver")
+                val guide = pick("Guide", "EPG", "Guia")
+                val info = pick("Info", "Display")
+                addKeyRow("BACK" to back, "GUIDE" to guide, "INFO" to info)
+
+                val play = pick("Play", "Play pause", "Playpause")
+                val pause = pick("Pause")
+                val stop = pick("Stop")
+                val previous = pick("Previous", "Prev", "Skip previous", "Back skip")
+                val next = pick("Next", "Skip next", "Skip")
+                val rewind = pick("Rewind", "Rew", "Reverse")
+                val fastForward = pick("Fast forward", "Fastforward", "FF", "Forward")
+                if (listOf(play, pause, stop, previous, next, rewind, fastForward).any { it != null }) {
+                    body.addView(sectionHeader("Media"))
+                    addKeyRow("PREV" to previous, "PLAY" to play, "NEXT" to next)
+                    addKeyRow("REW" to rewind, "PAUSE" to pause, "STOP" to stop, "FF" to fastForward)
+                }
+
+                val numbers = (0..9).associateWith { value ->
+                    pick(value.toString(), "Num $value", "Number $value", "Digit $value", "Key $value")
+                }
+                if (numbers.values.any { it != null }) {
+                    body.addView(sectionHeader("Teclado numérico"))
+                    listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9)).forEach { rowValues ->
+                        addKeyRow(*rowValues.map { it.toString() to numbers[it] }.toTypedArray())
+                    }
+                    val zeroRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    zeroRow.addView(Space(this@MainActivity), weighted())
+                    zeroRow.addView(space(dp(8)))
+                    zeroRow.addView(key("0", numbers[0]), weighted())
+                    zeroRow.addView(space(dp(8)))
+                    zeroRow.addView(Space(this), weighted())
+                    body.addView(zeroRow, spacedMatch(10))
+                }
+            }
+
+            DeviceCategory.SET_TOP_BOX,
+            DeviceCategory.MEDIA_BOX -> {
+                val source = pick("Input", "Source", "AV", "Entrada")
+                val home = pick("Home", "Inicio", "Smart", "Portal")
+                val menu = pick("Menu", "Settings", "Ajustes")
+                addKeyRow("SOURCE" to source, "HOME" to home, "MENU" to menu)
+
+                val up = pick("Up", "Arrow up", "Dpad up", "Cursor up", "Arriba")
+                val down = pick("Down", "Arrow down", "Dpad down", "Cursor down", "Abajo")
+                val left = pick("Left", "Arrow left", "Dpad left", "Cursor left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Dpad right", "Cursor right", "Derecha")
+                val ok = pick("OK", "Enter", "Select", "Center", "Centro")
+                addKeyRow("▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+
+                val back = pick("Back", "Return", "Exit", "Atras", "Volver")
+                val guide = pick("Guide", "EPG", "Guia")
+                val info = pick("Info", "Display")
+                addKeyRow("BACK" to back, "GUIDE" to guide, "INFO" to info)
+
+                val chUp = pick("Channel +", "Channel plus", "Channel up", "Ch plus", "Ch up", "Ch next")
+                val chDown = pick("Channel -", "Channel minus", "Channel down", "Ch minus", "Ch down", "Ch prev")
+                val volUp = pick("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+                val volDown = pick("Vol -", "Vol minus", "Vol down", "Volume minus", "Volume down")
+                val mute = pick("Mute", "Silence", "Silencio")
+                addKeyRow("CH +" to chUp, "CH −" to chDown)
+                addKeyRow("VOL +" to volUp, "MUTE" to mute, "VOL −" to volDown)
+
+                val play = pick("Play", "Play pause", "Playpause")
+                val pause = pick("Pause")
+                val stop = pick("Stop")
+                val previous = pick("Previous", "Prev", "Skip previous")
+                val next = pick("Next", "Skip next")
+                val rewind = pick("Rewind", "Rew", "Reverse")
+                val fastForward = pick("Fast forward", "Fastforward", "FF", "Forward")
+                if (listOf(play, pause, stop, previous, next, rewind, fastForward).any { it != null }) {
+                    body.addView(sectionHeader("Media"))
+                    addKeyRow("PREV" to previous, "PLAY" to play, "NEXT" to next)
+                    addKeyRow("REW" to rewind, "PAUSE" to pause, "STOP" to stop, "FF" to fastForward)
+                }
+
+                val numbers = (0..9).associateWith { value ->
+                    pick(value.toString(), "Num $value", "Number $value", "Digit $value", "Key $value")
+                }
+                if (numbers.values.any { it != null }) {
+                    body.addView(sectionHeader("Teclado numérico"))
+                    listOf(listOf(1, 2, 3), listOf(4, 5, 6), listOf(7, 8, 9)).forEach { rowValues ->
+                        addKeyRow(*rowValues.map { it.toString() to numbers[it] }.toTypedArray())
+                    }
+                    addKeyRow("0" to numbers[0])
+                }
+            }
+
+            DeviceCategory.DVD_PLAYER,
+            DeviceCategory.BLU_RAY -> {
+                val eject = pick("Eject", "Open close", "Open", "Close")
+                val menu = pick("Menu", "Disc menu", "Top menu")
+                val back = pick("Back", "Return", "Exit")
+                addKeyRow("EJECT" to eject, "MENU" to menu, "BACK" to back)
+
+                val up = pick("Up", "Arrow up", "Arriba")
+                val down = pick("Down", "Arrow down", "Abajo")
+                val left = pick("Left", "Arrow left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Derecha")
+                val ok = pick("OK", "Enter", "Select")
+                addKeyRow("▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+
+                val play = pick("Play", "Play pause", "Playpause")
+                val pause = pick("Pause")
+                val stop = pick("Stop")
+                val previous = pick("Previous", "Prev", "Skip previous")
+                val next = pick("Next", "Skip next")
+                val rewind = pick("Rewind", "Rew", "Reverse")
+                val fastForward = pick("Fast forward", "Fastforward", "FF", "Forward")
+                body.addView(sectionHeader("Reproducción"))
+                addKeyRow("PREV" to previous, "PLAY" to play, "NEXT" to next)
+                addKeyRow("REW" to rewind, "PAUSE" to pause, "STOP" to stop, "FF" to fastForward)
+            }
+
+            DeviceCategory.AV_RECEIVER,
+            DeviceCategory.SOUND_BAR -> {
+                val input = pick("Input", "Source", "AV", "Entrada")
+                val mode = pick("Mode", "Sound mode", "Surround", "DSP")
+                val mute = pick("Mute", "Silence", "Silencio")
+                addKeyRow("INPUT" to input, "MODE" to mode, "MUTE" to mute)
+                val volUp = pick("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+                val volDown = pick("Vol -", "Vol minus", "Vol down", "Volume minus", "Volume down")
+                addKeyRow("VOL +" to volUp, "VOL −" to volDown)
+                val up = pick("Up", "Arrow up")
+                val down = pick("Down", "Arrow down")
+                val left = pick("Left", "Arrow left")
+                val right = pick("Right", "Arrow right")
+                val ok = pick("OK", "Enter", "Select")
+                val menu = pick("Menu", "Settings", "Setup")
+                addKeyRow("MENU" to menu, "▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+            }
+
+            DeviceCategory.FAN -> {
+                val speedUp = pick("Speed +", "Speed up", "Fan +", "Fan up", "Fan speed up", "Faster")
+                val speedDown = pick("Speed -", "Speed down", "Fan -", "Fan down", "Fan speed down", "Slower")
+                val speed = pick("Speed", "Fan speed", "Fan")
+                val mode = pick("Mode", "Modo")
+                val swing = pick("Swing", "Swing up", "Swing down", "Oscillation", "Oscillate", "Oscilacion")
+                val timer = pick("Timer", "Sleep")
+                val light = pick("Light", "LED", "Display")
+                addKeyRow("SPEED +" to speedUp, "SPEED" to speed, "SPEED −" to speedDown)
+                addKeyRow("MODE" to mode, "SWING" to swing)
+                addKeyRow("TIMER" to timer, "LIGHT" to light)
+            }
+
+            DeviceCategory.CAMERA -> {
+                val shutter = pick("Shutter", "Shoot", "Capture", "Photo")
+                val zoomIn = pick("Zoom +", "Zoom in", "Tele")
+                val zoomOut = pick("Zoom -", "Zoom out", "Wide")
+                val menu = pick("Menu")
+                val playback = pick("Playback", "Play", "Review")
+                addKeyRow("SHUTTER" to shutter)
+                addKeyRow("ZOOM +" to zoomIn, "ZOOM −" to zoomOut)
+                addKeyRow("MENU" to menu, "PLAYBACK" to playback)
+                val up = pick("Up", "Arrow up")
+                val down = pick("Down", "Arrow down")
+                val left = pick("Left", "Arrow left")
+                val right = pick("Right", "Arrow right")
+                val ok = pick("OK", "Enter", "Select", "Set")
+                addKeyRow("▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+            }
+
+            DeviceCategory.AIR_CONDITIONER -> {
+                val tempUp = pick("Temp +", "Temp plus", "Temperature plus", "Temp up", "Temperature up")
+                val tempDown = pick("Temp -", "Temp minus", "Temperature minus", "Temp down", "Temperature down")
+                val mode = pick("Mode", "Modo")
+                val fan = pick("Fan", "Fan up", "Fan down", "Fan speed", "Ventilador")
+                val swing = pick("Swing", "Swing up", "Swing down", "Oscillation", "Oscilacion")
+                addKeyRow("TEMP ＋" to tempUp, "TEMP −" to tempDown)
+                addKeyRow("MODE" to mode, "FAN" to fan, "SWING" to swing)
+                addKeyRow(
+                    "COOL" to pick("Cool", "Cool hi", "Cool lo", "Frio"),
+                    "HEAT" to pick("Heat", "Heat hi", "Heat lo", "Calor"),
+                    "AUTO" to pick("Auto")
+                )
+            }
+
+            DeviceCategory.PROJECTOR -> {
+                val source = pick("Source", "Source next", "Input", "Input next", "Entrada")
+                val menu = pick("Menu")
+                val back = pick("Back", "Return", "Exit", "Atras")
+                addKeyRow("SOURCE" to source, "MENU" to menu, "BACK" to back)
+                val up = pick("Up", "Arrow up", "Arriba")
+                val down = pick("Down", "Arrow down", "Abajo")
+                val left = pick("Left", "Arrow left", "Izquierda")
+                val right = pick("Right", "Arrow right", "Derecha")
+                val ok = pick("OK", "Enter", "Select")
+                addKeyRow("▲" to up)
+                addKeyRow("◀" to left, "OK" to ok, "▶" to right)
+                addKeyRow("▼" to down)
+                addKeyRow(
+                    "MUTE" to pick("Mute", "Silencio"),
+                    "FREEZE" to pick("Freeze", "Pausa imagen")
+                )
+            }
+        }
+
+        val extras = remote.buttons.filterNot { it.id in consumed }
+        if (extras.isNotEmpty()) {
+            body.addView(sectionHeader("Más controles     " + extras.size))
+            extras.chunked(3).forEach { chunk ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                chunk.forEachIndexed { index, button ->
+                    row.addView(key(button.name.take(18), button), weighted())
+                    if (index < chunk.lastIndex) row.addView(space(dp(8)))
+                }
+                repeat(3 - chunk.size) {
+                    row.addView(space(dp(8)))
+                    row.addView(Space(this), weighted())
+                }
+                body.addView(row, spacedMatch(9))
+            }
+        }
+
+        body.addView(infoText(
+            "Si un botón aparece atenuado, este perfil no contiene esa señal. Puedes añadir otro mando desde botones aprendidos o descargar un perfil más completo desde Online."
+        ), spacedMatch(18))
+    }
+
+    private fun remoteCatalogCategories(): List<DeviceCategory> = listOf(
+        DeviceCategory.TELEVISION,
+        DeviceCategory.SET_TOP_BOX,
+        DeviceCategory.AIR_CONDITIONER,
+        DeviceCategory.FAN,
+        DeviceCategory.MEDIA_BOX,
+        DeviceCategory.DVD_PLAYER,
+        DeviceCategory.BLU_RAY,
+        DeviceCategory.AV_RECEIVER,
+        DeviceCategory.SOUND_BAR,
+        DeviceCategory.PROJECTOR,
+        DeviceCategory.CAMERA
+    )
+
+    private fun showRemoteAddDeviceTypes() {
+        beginScreen()
+        val body = installScreenBody("Añadir mando", onBack = { showRemoteControl() })
+        body.addView(card(18).apply {
+            addView(bodyText("1  ELIGE EL DISPOSITIVO", 12f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+            }, spacedMatch(6))
+            addView(bodyText(
+                "Selecciona qué quieres controlar. Después elige la marca y prueba códigos uno a uno hasta encontrar el mando que responde.",
+                14f,
+                IOS_SECONDARY
+            ))
+        }, spacedMatch(14))
+
+        val categories = remoteCatalogCategories()
+        categories.chunked(2).forEach { pair ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            pair.forEachIndexed { index, category ->
+                val tile = card(17).apply {
+                    gravity = Gravity.CENTER
+                    isClickable = true
+                    isFocusable = true
+                    contentDescription = "Añadir " + category.title
+                    addView(bodyText(categoryGlyph(category), 30f, CYBER_CYAN, Typeface.BOLD).apply {
+                        gravity = Gravity.CENTER
+                    }, spacedMatch(7))
+                    addView(bodyText(category.title, 14f, Color.WHITE, Typeface.BOLD).apply {
+                        gravity = Gravity.CENTER
+                        textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    }, spacedMatch(4))
+                    addView(bodyText(remoteCategorySubtitle(category), 10f, IOS_SECONDARY).apply {
+                        gravity = Gravity.CENTER
+                        textAlignment = View.TEXT_ALIGNMENT_CENTER
+                        maxLines = 2
+                    })
+                    setOnClickListener {
+                        performClickHaptic()
+                        showRemoteAddBrands(category)
+                    }
+                }
+                row.addView(tile, LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f
+                ).apply {
+                    if (index == 0 && pair.size > 1) marginEnd = dp(6)
+                    if (index > 0) marginStart = dp(6)
+                })
+            }
+            if (pair.size == 1) {
+                row.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(6) })
+            }
+            body.addView(row, spacedMatch(10))
+        }
+
+        val learned = outlineButton("⌁  CREAR DESDE BOTONES APRENDIDOS")
+        body.addView(learned, spacedMatch(18))
+        learned.setOnClickListener { showLearnedRemoteCategoryChooser() }
+    }
+
+    private fun showLearnedRemoteCategoryChooser() {
+        val categories = remoteCatalogCategories()
+        AlertDialog.Builder(this)
+            .setTitle("Tipo de mando")
+            .setItems(categories.map { it.title }.toTypedArray()) { _, which ->
+                val category = categories.getOrNull(which) ?: return@setItems
+                showRemoteBuilderDialog(category) { created ->
+                    preferences.edit().putString(PREF_REMOTE_ID, created.id).apply()
+                    showRemoteControl()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun showRemoteAddBrands(category: DeviceCategory) {
+        val screen = beginScreen()
+        val body = installScreenBody(category.title, onBack = { showRemoteAddDeviceTypes() })
+        body.addView(card(18).apply {
+            addView(bodyText("2  ELIGE LA MARCA", 12f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+            }, spacedMatch(6))
+            addView(bodyText(
+                "Las marcas se cargan desde las bibliotecas IR públicas compatibles con " + category.shortTitle + ".",
+                13f,
+                IOS_SECONDARY
+            ))
+        }, spacedMatch(12))
+
+        val query = oledInput("Buscar marca")
+        body.addView(query, spacedMatch(10))
+
+        fun brandInitial(value: String): String {
+            val normalized = java.text.Normalizer.normalize(
+                value.trim(),
+                java.text.Normalizer.Form.NFD
+            )
+            val first = normalized.firstOrNull { it.isLetterOrDigit() } ?: return "#"
+            val upper = first.uppercaseChar()
+            return if (upper in 'A'..'Z') upper.toString() else "#"
+        }
+
+        var selectedInitial: String? = null
+        val initialViews = mutableMapOf<String, TextView>()
+        val initialRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, dp(2), 0)
+        }
+        val initialScroller = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            addView(initialRow, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        body.addView(initialScroller, spacedMatch(8))
+
+        val status = infoText("Cargando marcas…")
+        body.addView(status, spacedMatch(6))
+        val host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(host, spacedMatch(18))
+
+        var brands: List<String> = popularRemoteBrands(category)
+        lateinit var render: () -> Unit
+
+        fun updateInitialSelector() {
+            val available = brands.map(::brandInitial).toSet()
+            initialViews.forEach { (key, view) ->
+                val selected = if (key == "TODAS") selectedInitial == null else selectedInitial == key
+                val enabled = key == "TODAS" || key in available
+                view.isEnabled = enabled
+                view.alpha = if (enabled) 1f else 0.28f
+                view.setTextColor(if (selected) Color.rgb(3, 16, 20) else CYBER_CYAN)
+                view.background = if (selected) {
+                    roundedDrawable(CYBER_CYAN, 10)
+                } else {
+                    cyberPanelDrawable(
+                        Color.argb(190, 11, 16, 24),
+                        10,
+                        Color.argb(125, 0, 229, 255)
+                    )
+                }
+            }
+        }
+
+        (listOf("TODAS") + ('A'..'Z').map(Char::toString) + "#").forEach { key ->
+            val label = if (key == "TODAS") "Todas" else key
+            val view = TextView(this).apply {
+                text = label
+                textSize = if (key == "TODAS") 11f else 13f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                minWidth = if (key == "TODAS") dp(62) else dp(38)
+                minHeight = dp(38)
+                isClickable = true
+                isFocusable = true
+                contentDescription = if (key == "TODAS") {
+                    "Mostrar todas las marcas"
+                } else {
+                    "Marcas que empiezan por $key"
+                }
+                setOnClickListener {
+                    if (!isEnabled) return@setOnClickListener
+                    performClickHaptic()
+                    selectedInitial = if (key == "TODAS") null else key
+                    updateInitialSelector()
+                    render()
+                }
+            }
+            initialViews[key] = view
+            initialRow.addView(view, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) })
+        }
+
+        render = {
+            host.removeAllViews()
+            val needle = query.text.toString().trim().lowercase()
+            val filtered = brands
+                .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                .filter { brand ->
+                    (needle.isBlank() || brand.lowercase().contains(needle)) &&
+                        (selectedInitial == null || brandInitial(brand) == selectedInitial)
+                }
+            status.text = when {
+                brands.isEmpty() -> "Cargando marcas…"
+                filtered.isEmpty() -> "No hay marcas que coincidan."
+                selectedInitial != null -> filtered.size.toString() + " marcas · inicial " + selectedInitial
+                else -> filtered.size.toString() + " marcas"
+            }
+            var lastInitial: String? = null
+            filtered.take(220).forEach { brand ->
+                val initial = brandInitial(brand)
+                if (selectedInitial == null && initial != lastInitial) {
+                    host.addView(bodyText(initial, 11f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                        letterSpacing = 0.12f
+                        setPadding(dp(6), dp(12), 0, dp(5))
+                    })
+                    lastInitial = initial
+                }
+                host.addView(browserRow(brand, "›") { showRemotePairing(category, brand) })
+            }
+            if (filtered.size > 220) {
+                host.addView(infoText("Mostrando las primeras 220. Escribe parte del nombre para filtrar."))
+            }
+            updateInitialSelector()
+        }
+        query.addTextChangedListener(simpleTextWatcher { render() })
+        updateInitialSelector()
+        render()
+        status.text = if (brands.isEmpty()) "Cargando marcas…" else "Marcas populares · cargando catálogo completo…"
+
+        worker.execute {
+            val primary = runCatching {
+                onlineLibrary.brands(category, listOf(OnlineIrSource.FLIPPER_COMMUNITY))
+            }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                primary.onSuccess {
+                    brands = (brands + it).distinctBy { value -> value.lowercase() }
+                    render()
+                }.onFailure {
+                    status.text = "Sin conexión con la fuente principal · intentando otras fuentes…"
+                }
+            }
+
+            val extended = runCatching { onlineLibrary.brands(category) }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                extended.onSuccess {
+                    brands = (brands + it).distinctBy { value -> value.lowercase() }
+                        .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                    render()
+                }.onFailure {
+                    if (brands.isEmpty()) {
+                        status.text = "No se pudieron cargar las marcas: " + (it.message ?: "error de red")
+                        host.removeAllViews()
+                        host.addView(outlineButton("REINTENTAR").apply {
+                            setOnClickListener { showRemoteAddBrands(category) }
+                        })
+                    } else {
+                        status.text = brands.size.toString() + " marcas · catálogo online no disponible"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showRemotePairing(category: DeviceCategory, brand: String) {
+        val screen = beginScreen()
+        val body = installScreenBody(brand, onBack = { showRemoteAddBrands(category) })
+        body.addView(card(18).apply {
+            addView(bodyText("3  PRUEBA EL MANDO", 12f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+            }, spacedMatch(6))
+            addView(bodyText(category.title + " · " + brand, 17f, Color.WHITE, Typeface.BOLD), spacedMatch(4))
+            addView(bodyText(
+                "Apunta al dispositivo. Si un botón funciona, pulsa Sí para continuar. Si no, pulsa No y probaremos otro código automáticamente.",
+                13f,
+                IOS_SECONDARY
+            ))
+        }, spacedMatch(12))
+
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1
+            progress = 0
+            progressTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
+        }
+        body.addView(progress, spacedMatch(8))
+
+        val codeStatus = bodyText("Buscando códigos compatibles…", 12f, IOS_SECONDARY).apply {
+            gravity = Gravity.CENTER
+        }
+        body.addView(codeStatus, spacedMatch(10))
+
+        val testCard = card(22).apply {
+            gravity = Gravity.CENTER
+        }
+        val stepLabel = bodyText("PREPARANDO", 11f, CYBER_CYAN, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+            letterSpacing = 0.12f
+        }
+        val stepPrompt = bodyText("Buscando un código para esta marca…", 14f, Color.WHITE, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+        }
+        val test = tintedButton("CARGANDO CÓDIGO…", CYBER_DANGER).apply {
+            isEnabled = false
+            alpha = 0.45f
+            minHeight = dp(76)
+            textSize = 17f
+        }
+        testCard.addView(stepLabel, spacedMatch(8))
+        testCard.addView(stepPrompt, spacedMatch(10))
+        testCard.addView(test, matchWrap())
+        body.addView(testCard, spacedMatch(12))
+
+        val answerPrompt = bodyText("¿Ha respondido el dispositivo?", 13f, IOS_SECONDARY, Typeface.BOLD).apply {
+            gravity = Gravity.CENTER
+        }
+        body.addView(answerPrompt, spacedMatch(8))
+        val answers = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val no = outlineButton("✕  NO").apply {
+            contentDescription = "No ha funcionado; probar otro código"
+        }
+        val yes = tintedButton("✓  SÍ", IOS_GREEN).apply {
+            contentDescription = "Sí ha funcionado; continuar con otro botón"
+        }
+        answers.addView(no, weighted())
+        answers.addView(space(dp(10)))
+        answers.addView(yes, weighted())
+        body.addView(answers, spacedMatch(8))
+
+        val status = infoText("Cargando perfiles de $brand…")
+        body.addView(status, spacedMatch(10))
+
+        val manual = outlineButton("ELEGIR MODELO / PERFIL MANUALMENTE")
+        body.addView(manual, spacedMatch(18))
+        manual.setOnClickListener { showRemoteAddProfiles(category, brand) }
+
+        var profiles: List<OnlineIrRemote> = emptyList()
+        var candidateIndex = -1
+        var currentRemote: OnlineIrRemote? = null
+        var currentLoaded: OnlineLoadedRemote? = null
+        var checks: List<Pair<RemotePairingCheck, CustomRemoteButton>> = emptyList()
+        var checkIndex = 0
+        lateinit var loadCandidate: (Int) -> Unit
+
+        fun setAnswerEnabled(enabled: Boolean) {
+            no.isEnabled = enabled
+            yes.isEnabled = enabled
+            no.alpha = if (enabled) 1f else 0.42f
+            yes.alpha = if (enabled) 1f else 0.42f
+        }
+
+        fun saveMatchedRemote() {
+            val remote = currentRemote ?: return
+            val loaded = currentLoaded ?: return
+            val buttons = loaded.signals.map { signal ->
+                CustomRemoteButton(name = signal.name, code = signal.code)
+            }
+            val defaultName = if (remote.model.isBlank() || remote.model.equals(brand, true)) {
+                brand
+            } else {
+                brand + " " + remote.model
+            }
+            val custom = CustomRemote(
+                name = defaultName,
+                category = category,
+                buttons = buttons,
+                brand = brand,
+                model = remote.model,
+                sourceDescription = loaded.sourceDescription
+            )
+            store.addRemote(custom)
+            preferences.edit().putString(PREF_REMOTE_ID, custom.id).apply()
+            performSuccessHaptic()
+            toast("Mando encontrado y guardado: " + custom.name)
+            showRemoteControl()
+        }
+
+        fun showCurrentCheck() {
+            val pair = checks.getOrNull(checkIndex)
+            if (pair == null) {
+                saveMatchedRemote()
+                return
+            }
+            val check = pair.first
+            stepLabel.text = "PRUEBA " + (checkIndex + 1) + " DE " + checks.size
+            stepPrompt.text = check.prompt
+            test.text = check.label
+            test.isEnabled = true
+            test.alpha = 1f
+            setAnswerEnabled(false)
+            answerPrompt.text = "Pulsa el botón y confirma si ha funcionado."
+            status.text = if (check.power) {
+                "Prueba el encendido/apagado. Si no responde, cambiaremos al siguiente código de $brand."
+            } else {
+                "El primer código funciona. Verifica ahora otro control para confirmar el mando."
+            }
+        }
+
+        loadCandidate = candidate@{ index ->
+            if (index !in profiles.indices) {
+                candidateIndex = profiles.size
+                currentRemote = null
+                currentLoaded = null
+                checks = emptyList()
+                checkIndex = 0
+                progress.progress = progress.max
+                codeStatus.text = "No quedan más códigos automáticos"
+                stepLabel.text = "SIN COINCIDENCIA"
+                stepPrompt.text = "No hemos encontrado un perfil que responda."
+                test.text = "SIN MÁS CÓDIGOS"
+                test.isEnabled = false
+                test.alpha = 0.42f
+                setAnswerEnabled(false)
+                answerPrompt.text = "Puedes elegir un modelo manualmente o volver a otra marca."
+                status.text = "Probados " + profiles.size + " perfiles de $brand sin confirmación completa."
+                return@candidate
+            }
+
+            candidateIndex = index
+            currentRemote = null
+            currentLoaded = null
+            checks = emptyList()
+            checkIndex = 0
+            progress.max = profiles.size.coerceAtLeast(1)
+            progress.progress = (index + 1).coerceAtMost(progress.max)
+            codeStatus.text = "Código " + (index + 1) + " de " + profiles.size
+            stepLabel.text = "CARGANDO CÓDIGO"
+            stepPrompt.text = "Preparando la siguiente combinación para probar…"
+            test.text = "CARGANDO…"
+            test.isEnabled = false
+            test.alpha = 0.45f
+            setAnswerEnabled(false)
+            status.text = "Preparando código " + (index + 1) + "…"
+
+            val remote = profiles[index]
+            worker.execute {
+                val downloaded = runCatching { onlineLibrary.download(remote) }
+                runOnUiThread {
+                    if (!isScreenActive(screen)) return@runOnUiThread
+                    downloaded.onSuccess { loaded ->
+                        val buttons = loaded.signals.map { signal ->
+                            CustomRemoteButton(name = signal.name, code = signal.code)
+                        }
+                        val resolved = resolveRemotePairingChecks(category, buttons)
+                        if (resolved.isEmpty()) {
+                            status.text = "El código " + (index + 1) + " no tiene controles verificables; probando el siguiente…"
+                            loadCandidate(index + 1)
+                            return@onSuccess
+                        }
+                        currentRemote = remote
+                        currentLoaded = loaded
+                        checks = resolved
+                        checkIndex = 0
+                        showCurrentCheck()
+                    }.onFailure {
+                        status.text = "No se pudo abrir el código " + (index + 1) + "; probando el siguiente…"
+                        loadCandidate(index + 1)
+                    }
+                }
+            }
+        }
+
+        test.setOnClickListener {
+            val pair = checks.getOrNull(checkIndex) ?: return@setOnClickListener
+            test.isEnabled = false
+            test.alpha = 0.65f
+            setAnswerEnabled(false)
+            answerPrompt.text = "Enviando señal…"
+            sendAsync(pair.second.code, status, screen) { success ->
+                if (!isScreenActive(screen)) return@sendAsync
+                test.isEnabled = true
+                test.alpha = 1f
+                if (success) {
+                    setAnswerEnabled(true)
+                    answerPrompt.text = "¿Ha respondido el dispositivo?"
+                } else {
+                    setAnswerEnabled(false)
+                    answerPrompt.text = "No se pudo transmitir. Revisa el emisor y vuelve a probar."
+                }
+            }
+        }
+        no.setOnClickListener {
+            performClickHaptic()
+            status.text = "No funcionó. Buscando el siguiente código de $brand…"
+            loadCandidate(candidateIndex + 1)
+        }
+        yes.setOnClickListener {
+            performSuccessHaptic()
+            checkIndex += 1
+            if (checkIndex < checks.size) {
+                showCurrentCheck()
+            } else {
+                status.text = "Mando confirmado. Guardando perfil…"
+                saveMatchedRemote()
+            }
+        }
+
+        setAnswerEnabled(false)
+        worker.execute {
+            val found = runCatching {
+                onlineLibrary.search(brand, "", category, deep = true)
+            }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                found.onSuccess { values ->
+                    profiles = values.distinctBy { it.id }
+                    if (profiles.isEmpty()) {
+                        codeStatus.text = "Sin códigos automáticos"
+                        stepLabel.text = "SIN PERFILES"
+                        stepPrompt.text = "No hay perfiles compatibles para esta marca."
+                        test.text = "SIN CÓDIGOS"
+                        status.text = "Prueba el selector manual o vuelve a elegir otra marca."
+                        setAnswerEnabled(false)
+                    } else {
+                        status.text = "Encontrados " + profiles.size + " códigos. Empezamos por el más probable."
+                        loadCandidate(0)
+                    }
+                }.onFailure {
+                    codeStatus.text = "Catálogo no disponible"
+                    stepLabel.text = "ERROR DE RED"
+                    stepPrompt.text = "No se pudieron cargar los códigos de esta marca."
+                    test.text = "REINTENTAR"
+                    test.isEnabled = true
+                    test.alpha = 1f
+                    test.setOnClickListener { showRemotePairing(category, brand) }
+                    status.text = "Error: " + (it.message ?: "no se pudo consultar el catálogo")
+                }
+            }
+        }
+    }
+
+    private fun showRemoteAddProfiles(category: DeviceCategory, brand: String) {
+        val screen = beginScreen()
+        val body = installScreenBody(brand, onBack = { showRemoteAddBrands(category) })
+        body.addView(card(18).apply {
+            addView(bodyText("3  ELIGE MODELO / PERFIL", 12f, CYBER_MAGENTA, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+            }, spacedMatch(6))
+            addView(bodyText(category.title + " · " + brand, 17f, Color.WHITE, Typeface.BOLD))
+        }, spacedMatch(12))
+
+        val query = oledInput("Buscar modelo")
+        body.addView(query, spacedMatch(10))
+        val status = infoText("Buscando perfiles de $brand…")
+        body.addView(status, spacedMatch(6))
+        val host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(host, spacedMatch(18))
+
+        var profiles: List<OnlineIrRemote> = emptyList()
+        fun render() {
+            host.removeAllViews()
+            val needle = query.text.toString().trim().lowercase()
+            val filtered = profiles.filter { remote ->
+                needle.isBlank() || remote.model.lowercase().contains(needle) ||
+                    remote.displayName.lowercase().contains(needle)
+            }
+            status.text = when {
+                profiles.isEmpty() -> "Buscando perfiles de $brand…"
+                filtered.isEmpty() -> "No hay modelos que coincidan."
+                else -> filtered.size.toString() + " perfiles encontrados"
+            }
+            filtered.forEach { remote ->
+                host.addView(browserRow(
+                    remote.model.ifBlank { remote.displayName },
+                    remote.source.title + "  ›"
+                ) {
+                    status.text = "Descargando " + remote.displayName + "…"
+                    worker.execute {
+                        val loaded = runCatching { onlineLibrary.download(remote) }
+                        runOnUiThread {
+                            if (!isScreenActive(screen)) return@runOnUiThread
+                            loaded.onSuccess { value ->
+                                showRemoteProfilePreview(category, brand, remote, value)
+                            }.onFailure {
+                                status.text = "No se pudo abrir el perfil: " + (it.message ?: "desconocido")
+                            }
+                        }
+                    }
+                })
+            }
+        }
+        query.addTextChangedListener(simpleTextWatcher(::render))
+
+        worker.execute {
+            val primary = runCatching {
+                onlineLibrary.search(
+                    brand,
+                    "",
+                    category,
+                    sources = listOf(OnlineIrSource.FLIPPER_COMMUNITY),
+                    deep = true
+                )
+            }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                primary.onSuccess {
+                    profiles = it
+                    render()
+                }.onFailure {
+                    status.text = "Fuente principal no disponible · buscando alternativas…"
+                }
+            }
+
+            val extended = runCatching { onlineLibrary.search(brand, "", category, deep = true) }
+            runOnUiThread {
+                if (!isScreenActive(screen)) return@runOnUiThread
+                extended.onSuccess {
+                    profiles = (profiles + it).distinctBy { remote -> remote.id }
+                    render()
+                    if (profiles.isEmpty()) {
+                        status.text = "No hay perfiles compatibles para esta marca."
+                        host.addView(outlineButton("VOLVER A MARCAS").apply {
+                            setOnClickListener { showRemoteAddBrands(category) }
+                        })
+                    }
+                }.onFailure {
+                    if (profiles.isEmpty()) {
+                        status.text = "Error de catálogo: " + (it.message ?: "desconocido")
+                    } else {
+                        status.text = profiles.size.toString() + " perfiles · otras fuentes no disponibles"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showRemoteProfilePreview(
+        category: DeviceCategory,
+        brand: String,
+        remote: OnlineIrRemote,
+        loaded: OnlineLoadedRemote
+    ) {
+        val screen = beginScreen()
+        val body = installScreenBody("Probar mando", onBack = { showRemoteAddProfiles(category, brand) })
+        val defaultName = if (remote.model.isBlank() || remote.model.equals(brand, true)) {
+            brand
+        } else {
+            brand + " " + remote.model
+        }
+        val name = oledInput("Nombre del mando").apply {
+            setText(remote.displayName)
+            setSelection(text.length)
+        }
+        val buttons = loaded.signals.map { signal ->
+            CustomRemoteButton(name = signal.name, code = signal.code)
+        }
+        val power = buttons.firstOrNull { button -> isPowerButtonName(button.name) }
+
+        body.addView(card(20).apply {
+            gravity = Gravity.CENTER
+            addView(bodyText(categoryGlyph(category), 40f, CYBER_CYAN, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+            }, spacedMatch(8))
+            addView(bodyText(remote.displayName, 19f, Color.WHITE, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
+            }, spacedMatch(4))
+            addView(bodyText(
+                buttons.size.toString() + " señales compatibles · " + remote.source.title,
+                12f,
+                IOS_SECONDARY
+            ).apply { gravity = Gravity.CENTER })
+        }, spacedMatch(12))
+        body.addView(name, spacedMatch(12))
+        val status = infoText(
+            if (power != null) "Apunta al dispositivo y prueba el botón de encendido."
+            else "Este perfil no contiene un Power reconocible; puedes guardarlo y probar sus botones."
+        )
+        body.addView(status, spacedMatch(8))
+        val test = tintedButton("PWR  PROBAR ENCENDIDO", CYBER_DANGER).apply {
+            isEnabled = power != null
+            alpha = if (power != null) 1f else 0.4f
+        }
+        val save = primaryButton("✓  GUARDAR MANDO")
+        val other = outlineButton("NO RESPONDE · PROBAR OTRO")
+        body.addView(test, spacedMatch(9))
+        body.addView(save, spacedMatch(9))
+        body.addView(other, spacedMatch(18))
+        test.setOnClickListener {
+            power?.let { sendAsync(it.code, status, screen) }
+        }
+        save.setOnClickListener {
+            val custom = CustomRemote(
+                name = name.text.toString().trim().ifBlank { defaultName },
+                category = category,
+                buttons = buttons,
+                brand = brand,
+                model = remote.model,
+                sourceDescription = loaded.sourceDescription
+            )
+            store.addRemote(custom)
+            preferences.edit().putString(PREF_REMOTE_ID, custom.id).apply()
+            performSuccessHaptic()
+            toast("Mando guardado: " + custom.name)
+            showRemoteControl()
+        }
+        other.setOnClickListener { showRemoteAddProfiles(category, brand) }
+    }
+
     private fun showSavedDevices() {
         val screen = beginScreen()
         val body = installScreenBody("Mis equipos")
@@ -1559,7 +2979,8 @@ class MainActivity : Activity() {
                             IOS_SECONDARY
                         ).apply { gravity = Gravity.CENTER })
                         setOnClickListener {
-                            showCustomRemote(remote, screen)
+                            preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+                            selectTab(5)
                         }
                         setOnLongClickListener {
                             AlertDialog.Builder(this@MainActivity)
@@ -1709,7 +3130,7 @@ class MainActivity : Activity() {
 
     private fun showDiagnostics() {
         val screen = beginScreen()
-        val body = installScreenBody("Diagnóstico")
+        val body = installScreenBody("Ajustes / Info")
         val input = learner.inspectInput()
         val outputReady = transmitter.active().isAvailable()
 
@@ -1751,9 +3172,9 @@ class MainActivity : Activity() {
         route.addView(bodyText("⌁  " + transmitter.active().name, 15f, Color.WHITE, Typeface.BOLD), spacedMatch(8))
         route.addView(bodyText(transmitter.diagnostics(), 13f, IOS_SECONDARY), spacedMatch(10))
         route.addView(divider(), spacedMatch(10))
-        route.addView(bodyText("✓  Audio mono: DESACTIVADO", 14f, Color.LTGRAY), spacedMatch(6))
-        route.addView(bodyText("≡  Balance: centrado", 14f, Color.LTGRAY), spacedMatch(6))
-        route.addView(bodyText("🔊  Volumen multimedia: 100 %", 14f, Color.LTGRAY), spacedMatch(8))
+        route.addView(bodyText("◖◗  Recomendado: Audio mono desactivado", 13f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("≡  Recomendado: balance centrado", 13f, Color.LTGRAY), spacedMatch(6))
+        route.addView(bodyText("🔊  Recomendado: volumen multimedia al máximo", 13f, Color.LTGRAY), spacedMatch(8))
         val sound = outlineButton("AJUSTES DE SONIDO")
         route.addView(sound)
         sound.setOnClickListener { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
@@ -1840,7 +3261,7 @@ class MainActivity : Activity() {
         }
         val oledToggle = Switch(this).apply {
             isChecked = oledMode()
-            thumbTintList = android.content.res.ColorStateList.valueOf(IOS_RED)
+            thumbTintList = android.content.res.ColorStateList.valueOf(CYBER_CYAN)
         }
         oledRow.addView(oledToggle)
         oled.addView(oledRow, spacedMatch(8))
@@ -1851,7 +3272,7 @@ class MainActivity : Activity() {
             IOS_SECONDARY
         )
         oled.addView(oledDescription, spacedMatch(8))
-        oled.addView(bodyText("●   ●   ●   Negro real · superficies mínimas · acento rojo", 11f, IOS_SECONDARY))
+        oled.addView(bodyText("◉  BLACKOUT MODE · negro real · neón cian/magenta", 11f, CYBER_CYAN))
         body.addView(oled, spacedMatch(14))
         oledToggle.setOnCheckedChangeListener { _, enabled ->
             preferences.edit().putBoolean(PREF_OLED_MODE, enabled).apply()
@@ -1900,6 +3321,10 @@ class MainActivity : Activity() {
         val availableVersion = bodyText("", 13f, IOS_GREEN, Typeface.BOLD).apply {
             visibility = View.GONE
         }
+        val releaseNotes = bodyText("", 12f, IOS_SECONDARY).apply {
+            visibility = View.GONE
+            setPadding(0, dp(2), 0, dp(6))
+        }
         val updateStatus = infoText(
             "Comprueba GitHub Releases para saber si hay una APK más reciente."
         ).apply { setPadding(0, 0, 0, dp(8)) }
@@ -1908,6 +3333,7 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         updates.addView(availableVersion, spacedMatch(6))
+        updates.addView(releaseNotes, spacedMatch(4))
         updates.addView(updateStatus, spacedMatch(8))
         updates.addView(checkUpdate, spacedMatch(8))
         updates.addView(downloadUpdate)
@@ -1929,9 +3355,18 @@ class MainActivity : Activity() {
                         availableVersion.text =
                             "Disponible: " + updater.releaseLabel(result.release)
                         availableVersion.visibility = View.VISIBLE
+                        val notes = result.release.notes
+                            .lines()
+                            .map { it.trim().removePrefix("-").trim() }
+                            .filter { it.isNotBlank() }
+                            .take(6)
+                            .joinToString("\n• ", prefix = if (result.release.notes.isBlank()) "" else "• ")
+                        releaseNotes.text = notes
+                        releaseNotes.visibility = if (notes.isBlank()) View.GONE else View.VISIBLE
                         downloadUpdate.visibility = View.VISIBLE
                     } else {
                         availableVersion.visibility = View.GONE
+                        releaseNotes.visibility = View.GONE
                         downloadUpdate.visibility = View.GONE
                     }
                 }
@@ -1946,12 +3381,31 @@ class MainActivity : Activity() {
         val credits = card(18)
         credits.addView(
             bodyText("★  Créditos", 16f, Color.WHITE, Typeface.BOLD),
-            spacedMatch(8)
+            spacedMatch(10)
         )
-        credits.addView(
-            bodyText("Gokuencinar", 17f, IOS_RED, Typeface.BOLD),
-            spacedMatch(4)
-        )
+        val creditIdentity = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+
+            addView(ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.credits_avatar)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.TRANSPARENT)
+                }
+                clipToOutline = true
+                contentDescription = "Avatar de Gokuencinar · GokuEn"
+            }, LinearLayout.LayoutParams(dp(54), dp(54)))
+
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(12), 0, 0, 0)
+                addView(bodyText("Gokuencinar · GokuEn", 17f, CYBER_CYAN, Typeface.BOLD))
+                addView(bodyText("Créditos", 12f, IOS_SECONDARY))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        credits.addView(creditIdentity, spacedMatch(10))
         credits.addView(
             bodyText(
                 "Creador y desarrollador de TVBGoneAudio y TVBGoneAndroid.",
@@ -1969,13 +3423,37 @@ class MainActivity : Activity() {
             ),
             spacedMatch(10)
         )
-        val creditActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val creatorActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val repository = outlineButton("⌁  GOKUENREPO")
+        val coffee = tintedButton("♥  BUY ME A COFFEE", CYBER_MAGENTA).apply { textSize = 12f }
+        creatorActions.addView(repository, weighted())
+        creatorActions.addView(space(dp(10)))
+        creatorActions.addView(coffee, weighted())
+        credits.addView(creatorActions, spacedMatch(10))
+
+        val projectActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val project = outlineButton("GITHUB")
         val licenses = outlineButton("LICENCIAS")
-        creditActions.addView(project, weighted())
-        creditActions.addView(space(dp(10)))
-        creditActions.addView(licenses, weighted())
-        credits.addView(creditActions)
+        projectActions.addView(project, weighted())
+        projectActions.addView(space(dp(10)))
+        projectActions.addView(licenses, weighted())
+        credits.addView(projectActions)
+        repository.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://github.com/Gokuencinar/GokuEnREPO")
+                )
+            )
+        }
+        coffee.setOnClickListener {
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://buymeacoffee.com/gokuen")
+                )
+            )
+        }
         project.setOnClickListener {
             startActivity(
                 Intent(
@@ -1997,7 +3475,10 @@ class MainActivity : Activity() {
         body.addView(credits, spacedMatch(20))
     }
 
-    private fun showRemoteBuilderDialog(category: DeviceCategory) {
+    private fun showRemoteBuilderDialog(
+        category: DeviceCategory,
+        onCreated: ((CustomRemote) -> Unit)? = null
+    ) {
         val learned = store.loadLearned().filter {
             learnedCategory(it)?.let { value -> value == category } ?: true
         }
@@ -2051,6 +3532,7 @@ class MainActivity : Activity() {
                     )
                     store.addRemote(remote)
                     toast("Mando creado: " + remote.name)
+                    onCreated?.invoke(remote)
                 }
             }
             .setNegativeButton("Cancelar", null)
@@ -2069,19 +3551,36 @@ class MainActivity : Activity() {
                     screen
                 )
             }
-            .setNeutralButton("Compartir .ir") { _, _ ->
-                val text = FlipperIrCodec.exportRawRecords(
-                    remote.buttons.map { it.name to it.code }
-                )
-                val share = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
-                    putExtra(Intent.EXTRA_TEXT, text)
-                }
-                startActivity(Intent.createChooser(share, "Compartir mando"))
-            }
+            .setNeutralButton("Compartir .ir") { _, _ -> shareCustomRemote(remote) }
             .setNegativeButton("Cerrar", null)
             .show()
+    }
+
+    private fun shareCustomRemote(remote: CustomRemote) {
+        val text = FlipperIrCodec.exportRawRecords(
+            remote.buttons.map { it.name to it.code }
+        )
+        val safeBase = remote.name
+            .replace(Regex("[^A-Za-z0-9._ -]+"), "_")
+            .trim()
+            .ifBlank { "TVBGoneAndroid-remote" }
+            .take(64)
+        val shareDir = File(cacheDir, "shared-ir").apply { mkdirs() }
+        shareDir.listFiles()?.forEach { it.delete() }
+        val file = File(shareDir, "$safeBase.ir").apply { writeText(text, Charsets.UTF_8) }
+        val uri = Uri.Builder()
+            .scheme("content")
+            .authority("$packageName.irfiles")
+            .appendPath(file.name)
+            .build()
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, remote.name + ".ir")
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newUri(contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(share, "Compartir mando"))
     }
 
     private fun openBackupPicker() {
@@ -2098,20 +3597,30 @@ class MainActivity : Activity() {
         sendAsync(code, status)
     }
 
-    private fun sendAsync(code: IrCode, status: TextView, screen: Long = screenGeneration) {
+    private fun sendAsync(
+        code: IrCode,
+        status: TextView,
+        screen: Long = screenGeneration,
+        onResult: ((Boolean) -> Unit)? = null
+    ) {
         val active = transmitter.active()
+        performClickHaptic()
         status.text = "Enviando " + code.displayName + " mediante " + active.name + "…"
         worker.execute {
             val result = runCatching { active.send(code) }
             runOnUiThread {
                 if (!isScreenActive(screen)) return@runOnUiThread
                 result.onSuccess {
+                    performSuccessHaptic()
                     status.text = "Enviado: " + code.displayName + " · " + code.effectiveCarrierHz + " Hz"
+                    onResult?.invoke(true)
                     if (status.parent == null) {
                         toast("Enviado: " + code.displayName)
                     }
                 }.onFailure {
+                    performErrorHaptic()
                     status.text = "Error: " + (it.message ?: "desconocido")
+                    onResult?.invoke(false)
                     if (status.parent == null) {
                         toast("Error: " + (it.message ?: "desconocido"))
                     }
@@ -2120,7 +3629,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showImportedSignals(signals: List<ImportedIrSignal>, category: DeviceCategory) {
+    private fun showImportedSignals(
+        signals: List<ImportedIrSignal>,
+        category: DeviceCategory,
+        remoteName: String = "Mando importado",
+        brand: String = "",
+        model: String = "",
+        sourceDescription: String = ""
+    ) {
         if (signals.isEmpty()) return toast("No hay señales compatibles.")
         val names = signals.map { it.name + " · " + it.sourceDescription }.toTypedArray()
         AlertDialog.Builder(this)
@@ -2144,6 +3660,22 @@ class MainActivity : Activity() {
                     }
                     .setNegativeButton("Cancelar", null)
                     .show()
+            }
+            .setNeutralButton("Guardar como mando") { _, _ ->
+                val remote = CustomRemote(
+                    name = remoteName.trim().ifBlank { "Mando importado" },
+                    category = category,
+                    buttons = signals.map { signal ->
+                        CustomRemoteButton(name = signal.name, code = signal.code)
+                    },
+                    brand = brand,
+                    model = model,
+                    sourceDescription = sourceDescription
+                )
+                store.addRemote(remote)
+                preferences.edit().putString(PREF_REMOTE_ID, remote.id).apply()
+                performSuccessHaptic()
+                toast("Mando guardado: " + remote.name)
             }
             .show()
     }
@@ -2211,7 +3743,7 @@ class MainActivity : Activity() {
                     importedSignals.forEach { signal ->
                         learned += signal.code.copy(
                             id = "learned:" + signal.name.replace(":", "_") + ":" +
-                                selectedCategory.name + ":" + java.util.UUID.randomUUID()
+                                selectedLearnCategory.name + ":" + java.util.UUID.randomUUID()
                         )
                     }
                     store.saveLearned(learned)
@@ -2255,41 +3787,87 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_MIC && currentTab == 3) {
-            showLearn()
+        if (requestCode == REQUEST_MIC) {
+            when (currentTab) {
+                3 -> showLearn()
+                4 -> showDiagnostics()
+            }
         }
     }
 
     private fun installScreenBody(title: String, onBack: (() -> Unit)? = null): LinearLayout {
+        screenBackAction = onBack
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(screenBackground())
         }
 
         val navigation = FrameLayout(this).apply {
-            setBackgroundColor(screenBackground())
+            background = cyberPanelDrawable(
+                fill = Color.rgb(7, 10, 16),
+                radiusDp = 0,
+                stroke = Color.argb(80, 0, 229, 255)
+            )
+            addView(View(this@MainActivity).apply {
+                background = cyberGradientDrawable(
+                    intArrayOf(CYBER_MAGENTA, CYBER_PURPLE, CYBER_CYAN),
+                    0
+                )
+            }, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(2),
+                Gravity.TOP
+            ))
         }
         val titleView = TextView(this).apply {
-            text = title
-            textSize = 17f
+            text = title.uppercase()
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
+            gravity = Gravity.CENTER_VERTICAL or Gravity.START
             setTextColor(Color.WHITE)
+            letterSpacing = 0.08f
+            setPadding(if (onBack != null) dp(56) else dp(16), 0, dp(116), 0)
         }
         navigation.addView(titleView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(48),
+            dp(54),
             Gravity.CENTER
         ))
+        val active = transmitter.active()
+        val ready = active.isAvailable()
+        val chip = TextView(this).apply {
+            text = if (ready) "IR // READY" else "IR // CHECK"
+            textSize = 9f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            setTextColor(if (ready) CYBER_GREEN else CYBER_WARNING)
+            background = cyberPanelDrawable(
+                fill = Color.argb(24, 0, 229, 255),
+                radiusDp = 10,
+                stroke = if (ready) Color.argb(150, 57, 255, 136)
+                    else Color.argb(160, 255, 176, 32)
+            )
+        }
+        navigation.addView(chip, FrameLayout.LayoutParams(
+            dp(96),
+            dp(26),
+            Gravity.END or Gravity.CENTER_VERTICAL
+        ).apply { marginEnd = dp(12) })
         if (onBack != null) {
             val back = TextView(this).apply {
                 text = "‹"
                 textSize = 34f
                 gravity = Gravity.CENTER
-                setTextColor(IOS_RED)
+                setTextColor(CYBER_CYAN)
                 setPadding(dp(6), 0, dp(8), 0)
                 isClickable = true
-                setOnClickListener { onBack() }
+                isFocusable = true
+                contentDescription = "Volver"
+                setOnClickListener {
+                    performClickHaptic()
+                    onBack()
+                }
             }
             navigation.addView(back, FrameLayout.LayoutParams(
                 dp(48),
@@ -2299,12 +3877,12 @@ class MainActivity : Activity() {
         }
         page.addView(navigation, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(48)
+            dp(54)
         ))
 
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(28))
+            setPadding(dp(14), dp(12), dp(14), dp(30))
             setBackgroundColor(screenBackground())
         }
         val scroll = ScrollView(this).apply {
@@ -2326,6 +3904,7 @@ class MainActivity : Activity() {
 
     private fun beginScreen(): Long {
         scanner.stop()
+        setKeepScreenOn(false)
         screenGeneration += 1
         return screenGeneration
     }
@@ -2364,20 +3943,22 @@ class MainActivity : Activity() {
 
     private fun sectionHeader(value: String) = bodyText(
         value,
-        18f,
+        16f,
         Color.WHITE,
         Typeface.BOLD
     ).apply {
-        setPadding(dp(2), dp(6), dp(2), dp(10))
+        letterSpacing = 0.05f
+        setPadding(dp(3), dp(8), dp(2), dp(10))
+        compoundDrawablePadding = dp(7)
     }
 
     private fun card(radius: Int = 18) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = roundedDrawable(
-            if (oledMode()) IOS_SURFACE else Color.rgb(38, 38, 40),
-            radius,
-            if (oledMode()) IOS_BORDER else Color.rgb(58, 58, 60)
+        background = cyberPanelDrawable(
+            fill = if (oledMode()) CYBER_SURFACE else CYBER_SURFACE_ALT,
+            radiusDp = radius,
+            stroke = if (oledMode()) IOS_BORDER else CYBER_BORDER
         )
     }
 
@@ -2395,24 +3976,52 @@ class MainActivity : Activity() {
             setColor(fillColor)
         }
 
+    private fun cyberPanelDrawable(fill: Int, radiusDp: Int, stroke: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(fill)
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1).coerceAtLeast(1), stroke)
+        }
+
+    private fun cyberGradientDrawable(colors: IntArray, radiusDp: Int): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors).apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(radiusDp).toFloat()
+        }
+
     private fun primaryButton(value: String) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
-        textSize = 14f
+        setTextColor(Color.rgb(3, 16, 20))
+        textSize = 13f
         typeface = Typeface.DEFAULT_BOLD
-        background = roundedDrawable(IOS_RED, 12)
+        letterSpacing = 0.06f
+        background = cyberGradientDrawable(
+            intArrayOf(CYBER_CYAN, Color.rgb(96, 239, 255)),
+            12
+        )
         minHeight = dp(50)
         setPadding(dp(12), dp(11), dp(12), dp(11))
         stateListAnimator = null
+        setOnLongClickListener {
+            performClickHaptic()
+            false
+        }
     }
 
     private fun outlineButton(value: String) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        background = roundedDrawable(Color.argb(12, 255, 255, 255), 12, Color.argb(40, 255, 255, 255))
+        setTextColor(CYBER_CYAN)
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.04f
+        background = cyberPanelDrawable(
+            Color.argb(210, 11, 16, 24),
+            12,
+            Color.argb(160, 0, 229, 255)
+        )
         minHeight = dp(46)
         setPadding(dp(10), dp(9), dp(10), dp(9))
         stateListAnimator = null
@@ -2421,7 +4030,7 @@ class MainActivity : Activity() {
     private fun tintedButton(value: String, tint: Int) = Button(this).apply {
         text = value
         isAllCaps = false
-        setTextColor(Color.WHITE)
+        setTextColor(Color.rgb(3, 16, 20))
         textSize = 14f
         typeface = Typeface.DEFAULT_BOLD
         background = roundedDrawable(tint, 12)
@@ -2435,10 +4044,10 @@ class MainActivity : Activity() {
         setHintTextColor(IOS_SECONDARY)
         textSize = 15f
         setSingleLine(true)
-        background = roundedDrawable(
-            if (oledMode()) IOS_SURFACE else Color.rgb(44, 44, 46),
+        background = cyberPanelDrawable(
+            if (oledMode()) Color.rgb(8, 12, 18) else CYBER_SURFACE_ALT,
             12,
-            if (oledMode()) IOS_BORDER else Color.rgb(70, 70, 72)
+            Color.argb(135, 0, 229, 255)
         )
         setPadding(dp(12), dp(11), dp(12), dp(11))
     }
@@ -2452,10 +4061,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(2), dp(2), dp(2), dp(2))
-            background = roundedDrawable(
-                if (oledMode()) Color.argb(12, 255, 255, 255) else Color.rgb(44, 44, 46),
+            background = cyberPanelDrawable(
+                if (oledMode()) Color.rgb(8, 12, 18) else CYBER_SURFACE_ALT,
                 10,
-                if (oledMode()) Color.argb(18, 255, 255, 255) else Color.rgb(68, 68, 70)
+                Color.argb(110, 0, 229, 255)
             )
             tag = selectedIndex.coerceIn(0, (labels.size - 1).coerceAtLeast(0))
         }
@@ -2465,11 +4074,12 @@ class MainActivity : Activity() {
                 textSize = if (labels.size >= 4) 11f else 12f
                 gravity = Gravity.CENTER
                 typeface = Typeface.DEFAULT_BOLD
-                minHeight = dp(34)
+                minHeight = dp(48)
+                contentDescription = label
             }
             row.addView(item, LinearLayout.LayoutParams(
                 0,
-                dp(34),
+                dp(48),
                 1f
             ))
             item.setOnClickListener {
@@ -2507,8 +4117,12 @@ class MainActivity : Activity() {
         for (i in 0 until row.childCount) {
             val item = row.getChildAt(i) as? TextView ?: continue
             val active = i == selected
+            item.isSelected = active
             item.setTextColor(if (active) Color.WHITE else IOS_SECONDARY)
-            item.background = if (active) roundedDrawable(IOS_RED, 8)
+            item.background = if (active) cyberGradientDrawable(
+                intArrayOf(Color.argb(210, 139, 92, 246), Color.argb(225, 255, 43, 214)),
+                8
+            )
             else roundedDrawable(Color.TRANSPARENT, 8)
         }
     }
@@ -2517,7 +4131,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(44)
+            minimumHeight = dp(48)
             setPadding(dp(8), dp(5), dp(6), dp(5))
             addView(bodyText(title, 14f, Color.WHITE), LinearLayout.LayoutParams(
                 0,
@@ -2534,7 +4148,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(24), dp(18), dp(24))
-            addView(bodyText("⌾", 38f, IOS_SECONDARY).apply { gravity = Gravity.CENTER })
+            background = cyberPanelDrawable(
+                Color.argb(150, 10, 14, 21),
+                18,
+                Color.argb(80, 139, 92, 246)
+            )
+            addView(bodyText("⌾", 38f, CYBER_CYAN).apply { gravity = Gravity.CENTER })
             addView(bodyText(title, 17f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(8), 0, dp(6))
@@ -2550,8 +4169,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(4), dp(10), dp(4), dp(10))
-            background = roundedDrawable(IOS_SURFACE, 17, IOS_BORDER)
-            addView(bodyText(glyph, 18f, IOS_RED).apply { gravity = Gravity.CENTER })
+            background = cyberPanelDrawable(CYBER_SURFACE, 17, Color.argb(110, 0, 229, 255))
+            addView(bodyText(glyph, 18f, CYBER_MAGENTA).apply { gravity = Gravity.CENTER })
             addView(bodyText(value.toString(), 20f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(3), 0, dp(2))
@@ -2563,7 +4182,7 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(bodyText(if (ok) "✓" else "✕", 20f, if (ok) IOS_GREEN else IOS_RED),
+            addView(bodyText(if (ok) "✓" else "✕", 20f, if (ok) IOS_GREEN else CYBER_DANGER),
                 LinearLayout.LayoutParams(dp(34), dp(40)))
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -2573,7 +4192,10 @@ class MainActivity : Activity() {
         }
 
     private fun divider(): View = View(this).apply {
-        setBackgroundColor(Color.argb(25, 255, 255, 255))
+        background = cyberGradientDrawable(
+            intArrayOf(Color.TRANSPARENT, Color.argb(135, 0, 229, 255), Color.TRANSPARENT),
+            0
+        )
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
     }
 
@@ -2581,21 +4203,33 @@ class MainActivity : Activity() {
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            val icon = TextView(this@MainActivity).apply {
-                text = categoryGlyph(selectedCategory)
-                textSize = 44f
-                gravity = Gravity.CENTER
-                setTextColor(IOS_RED)
-                background = circleDrawable(Color.argb(40, 255, 59, 48))
+            val core = FrameLayout(this@MainActivity).apply {
+                addView(View(this@MainActivity).apply {
+                    background = circleDrawable(Color.argb(42, 255, 43, 214))
+                }, FrameLayout.LayoutParams(dp(118), dp(118), Gravity.CENTER))
+                addView(View(this@MainActivity).apply {
+                    background = cyberPanelDrawable(
+                        Color.rgb(8, 12, 18),
+                        58,
+                        Color.argb(205, 0, 229, 255)
+                    )
+                }, FrameLayout.LayoutParams(dp(104), dp(104), Gravity.CENTER))
+                addView(TextView(this@MainActivity).apply {
+                    text = categoryGlyph(selectedCategory)
+                    textSize = 42f
+                    gravity = Gravity.CENTER
+                    setTextColor(CYBER_CYAN)
+                }, FrameLayout.LayoutParams(dp(92), dp(92), Gravity.CENTER))
             }
-            addView(icon, LinearLayout.LayoutParams(dp(104), dp(104)))
-            addView(bodyText("TVBGONEANDROID", 11f, IOS_SECONDARY, Typeface.BOLD).apply {
+            addView(core, LinearLayout.LayoutParams(dp(122), dp(122)))
+            addView(bodyText("TVBGONE // REMOTE CORE", 10f, CYBER_MAGENTA, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
-                letterSpacing = 0.16f
-                setPadding(0, dp(12), 0, dp(7))
+                letterSpacing = 0.18f
+                setPadding(0, dp(14), 0, dp(6))
             })
-            addView(bodyText(selectedCategory.title, 21f, Color.WHITE, Typeface.BOLD).apply {
+            addView(bodyText(selectedCategory.title.uppercase(), 22f, Color.WHITE, Typeface.BOLD).apply {
                 gravity = Gravity.CENTER
+                letterSpacing = 0.04f
             })
             addView(bodyText(categoryExplanation(selectedCategory), 13f, IOS_SECONDARY).apply {
                 gravity = Gravity.CENTER
@@ -2607,8 +4241,11 @@ class MainActivity : Activity() {
     private fun accessoryStatusCard(): View {
         val active = transmitter.active()
         val ready = active.isAvailable()
-        val tint = if (ready) IOS_GREEN else Color.rgb(255, 149, 0)
+        val tint = if (ready) CYBER_GREEN else CYBER_WARNING
         return card(20).apply {
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Estado del accesorio. Abrir Ajustes e información"
             val top = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -2635,6 +4272,14 @@ class MainActivity : Activity() {
                 11f,
                 IOS_SECONDARY
             ))
+            addView(bodyText("TOCA PARA ABRIR AJUSTES / INFO  ›", 10f, CYBER_CYAN, Typeface.BOLD).apply {
+                letterSpacing = 0.08f
+                setPadding(0, dp(10), 0, 0)
+            })
+            setOnClickListener {
+                performClickHaptic()
+                selectTab(4)
+            }
         }
     }
 
@@ -2642,18 +4287,35 @@ class MainActivity : Activity() {
         DeviceCategory.TELEVISION -> "▣"
         DeviceCategory.AIR_CONDITIONER -> "❄"
         DeviceCategory.PROJECTOR -> "▰"
+        DeviceCategory.SET_TOP_BOX -> "▤"
+        DeviceCategory.FAN -> "✺"
+        DeviceCategory.MEDIA_BOX -> "◉"
+        DeviceCategory.DVD_PLAYER -> "◍"
+        DeviceCategory.BLU_RAY -> "◎"
+        DeviceCategory.AV_RECEIVER -> "≋"
+        DeviceCategory.SOUND_BAR -> "▬"
+        DeviceCategory.CAMERA -> "◈"
     }
 
     private fun categoryButtonTitle(category: DeviceCategory): String = when (category) {
         DeviceCategory.TELEVISION -> "⏻  APAGAR TELEVISORES"
         DeviceCategory.AIR_CONDITIONER -> "⏻  APAGAR AIRES"
         DeviceCategory.PROJECTOR -> "⏻  APAGAR PROYECTORES"
+        else -> "PWR  PROBAR ENCENDIDO"
     }
 
     private fun defaultDeviceName(category: DeviceCategory): String = when (category) {
         DeviceCategory.TELEVISION -> "Mi TV"
         DeviceCategory.AIR_CONDITIONER -> "Mi aire"
         DeviceCategory.PROJECTOR -> "Mi proyector"
+        DeviceCategory.SET_TOP_BOX -> "Mi decodificador"
+        DeviceCategory.FAN -> "Mi ventilador"
+        DeviceCategory.MEDIA_BOX -> "Mi TV Box"
+        DeviceCategory.DVD_PLAYER -> "Mi DVD"
+        DeviceCategory.BLU_RAY -> "Mi Blu-ray"
+        DeviceCategory.AV_RECEIVER -> "Mi receptor A/V"
+        DeviceCategory.SOUND_BAR -> "Mi barra de sonido"
+        DeviceCategory.CAMERA -> "Mi cámara"
     }
 
     private fun categoryExplanation(category: DeviceCategory): String = when (category) {
@@ -2663,6 +4325,198 @@ class MainActivity : Activity() {
             "Recorre señales POWER/OFF de mandos de aire acondicionado, priorizando capturas RAW."
         DeviceCategory.PROJECTOR ->
             "Recorre señales POWER/OFF de proyectores de distintas marcas y modelos."
+        else ->
+            "Esta categoría se configura desde Mando usando perfiles por marca y modelo de la biblioteca IR online."
+    }
+
+    private fun remoteCategorySubtitle(category: DeviceCategory): String = when (category) {
+        DeviceCategory.TELEVISION -> "Smart TV y TV clásicas"
+        DeviceCategory.AIR_CONDITIONER -> "Climatización"
+        DeviceCategory.PROJECTOR -> "Proyectores IR"
+        DeviceCategory.SET_TOP_BOX -> "Cable, TDT y satélite"
+        DeviceCategory.FAN -> "Ventiladores y torres"
+        DeviceCategory.MEDIA_BOX -> "Streaming y multimedia"
+        DeviceCategory.DVD_PLAYER -> "DVD y reproductores"
+        DeviceCategory.BLU_RAY -> "Blu-ray"
+        DeviceCategory.AV_RECEIVER -> "Home cinema y receptores"
+        DeviceCategory.SOUND_BAR -> "Audio y soundbars"
+        DeviceCategory.CAMERA -> "Cámaras con IR"
+    }
+
+    private fun popularRemoteBrands(category: DeviceCategory): List<String> = when (category) {
+        DeviceCategory.TELEVISION -> listOf(
+            "Samsung", "LG", "Sony", "Panasonic", "Philips", "Sharp", "TCL", "Hisense",
+            "Xiaomi", "Toshiba", "Haier", "JVC", "Grundig", "Thomson", "TD Systems"
+        )
+        DeviceCategory.AIR_CONDITIONER -> listOf(
+            "Daikin", "Mitsubishi", "LG", "Samsung", "Panasonic", "Fujitsu", "Hisense",
+            "Haier", "Gree", "Midea", "Toshiba", "Carrier"
+        )
+        DeviceCategory.PROJECTOR -> listOf(
+            "Epson", "BenQ", "Optoma", "ViewSonic", "Sony", "Panasonic", "NEC", "Acer"
+        )
+        DeviceCategory.SET_TOP_BOX -> listOf(
+            "Arris", "Cisco", "Humax", "Pace", "Technicolor", "Sky", "Motorola", "Sagemcom"
+        )
+        DeviceCategory.FAN -> listOf(
+            "Dyson", "Honeywell", "Rowenta", "Hunter", "Lasko", "Dreo", "Xiaomi"
+        )
+        DeviceCategory.MEDIA_BOX -> listOf(
+            "Apple", "Amazon", "Roku", "Nvidia", "Xiaomi", "Google", "Western Digital"
+        )
+        DeviceCategory.DVD_PLAYER,
+        DeviceCategory.BLU_RAY -> listOf(
+            "Sony", "Samsung", "LG", "Panasonic", "Philips", "Pioneer", "Toshiba"
+        )
+        DeviceCategory.AV_RECEIVER -> listOf(
+            "Denon", "Yamaha", "Onkyo", "Pioneer", "Marantz", "Sony", "Harman Kardon"
+        )
+        DeviceCategory.SOUND_BAR -> listOf(
+            "Samsung", "LG", "Sony", "Bose", "JBL", "Yamaha", "Polk", "Vizio"
+        )
+        DeviceCategory.CAMERA -> listOf(
+            "Canon", "Nikon", "Sony", "Olympus", "Panasonic", "Pentax"
+        )
+    }
+
+    private fun normalizedRemoteButtonName(value: String): String = value
+        .trim()
+        .lowercase()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+        .replace("ñ", "n")
+        .replace("+", " plus ")
+        .replace("-", " minus ")
+        .replace("_", " ")
+        .replace(Regex("[^a-z0-9 ]+"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+    private fun isPowerButtonName(value: String): Boolean {
+        val name = normalizedRemoteButtonName(value)
+        val compact = name.replace(" ", "")
+        return name == "power" || name == "pwr" || name == "standby" ||
+            name == "toggle power" || name == "on off" || name == "off on" ||
+            name == "on" || name == "off" || name.startsWith("power ") ||
+            name.startsWith("pwr ") || name.startsWith("turn on") || name.startsWith("turn off") ||
+            compact in setOf("poweroff", "poweron", "turnoff", "turnon", "togglepower")
+    }
+
+    private fun remotePairingChecks(category: DeviceCategory): List<RemotePairingCheck> = when (category) {
+        DeviceCategory.TELEVISION -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el televisor?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up", "Subir volumen")
+            ),
+            RemotePairingCheck(
+                "INPUT  CAMBIAR ENTRADA",
+                "¿Cambia la fuente o entrada?",
+                listOf("Input", "Input next", "Source", "Source next", "AV", "Entrada")
+            )
+        )
+        DeviceCategory.SET_TOP_BOX -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el decodificador?", power = true),
+            RemotePairingCheck(
+                "CH +  CANAL SIGUIENTE",
+                "¿Cambia al canal siguiente?",
+                listOf("Channel +", "Channel plus", "Channel up", "Channel next", "Ch +", "Ch plus", "Ch up", "Ch next")
+            ),
+            RemotePairingCheck("OK  CONFIRMAR", "¿Funciona el botón OK?", listOf("OK", "Enter", "Select", "Center"))
+        )
+        DeviceCategory.AIR_CONDITIONER -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el aire acondicionado?", power = true),
+            RemotePairingCheck(
+                "TEMP +  SUBIR TEMPERATURA",
+                "¿Sube la temperatura?",
+                listOf("Temp +", "Temp plus", "Temp up", "Temperature +", "Temperature plus", "Temperature up")
+            ),
+            RemotePairingCheck("MODE  CAMBIAR MODO", "¿Cambia el modo?", listOf("Mode", "Modo", "Cool", "Heat", "Auto"))
+        )
+        DeviceCategory.FAN -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el ventilador?", power = true),
+            RemotePairingCheck(
+                "SPEED +  SUBIR VELOCIDAD",
+                "¿Cambia o sube la velocidad?",
+                listOf("Speed +", "Speed plus", "Speed up", "Fan +", "Fan plus", "Fan up", "Fan speed up")
+            ),
+            RemotePairingCheck("SWING  OSCILACIÓN", "¿Activa o cambia la oscilación?", listOf("Swing", "Swing up", "Oscillate", "Oscillation"))
+        )
+        DeviceCategory.MEDIA_BOX -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el TV Box?", power = true),
+            RemotePairingCheck("HOME  INICIO", "¿Abre la pantalla de inicio?", listOf("Home", "Inicio", "Smart", "Portal")),
+            RemotePairingCheck("OK  CONFIRMAR", "¿Funciona el botón OK?", listOf("OK", "Enter", "Select", "Center"))
+        )
+        DeviceCategory.DVD_PLAYER,
+        DeviceCategory.BLU_RAY -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el reproductor?", power = true),
+            RemotePairingCheck("PLAY  REPRODUCIR", "¿Funciona Reproducir?", listOf("Play", "Play pause", "Playpause")),
+            RemotePairingCheck("MENU  MENÚ", "¿Abre el menú?", listOf("Menu", "Top menu", "Title menu", "Settings"))
+        )
+        DeviceCategory.AV_RECEIVER -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el receptor A/V?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+            ),
+            RemotePairingCheck("INPUT  CAMBIAR ENTRADA", "¿Cambia la entrada?", listOf("Input", "Input next", "Source", "Source next", "AV"))
+        )
+        DeviceCategory.SOUND_BAR -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga la barra de sonido?", power = true),
+            RemotePairingCheck(
+                "VOL +  SUBIR VOLUMEN",
+                "¿Sube el volumen?",
+                listOf("Vol +", "Vol plus", "Vol up", "Volume plus", "Volume up")
+            ),
+            RemotePairingCheck("MUTE  SILENCIO", "¿Activa o quita el silencio?", listOf("Mute", "Silence", "Silencio"))
+        )
+        DeviceCategory.PROJECTOR -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga el proyector?", power = true),
+            RemotePairingCheck(
+                "SOURCE  CAMBIAR FUENTE",
+                "¿Cambia la fuente o entrada?",
+                listOf("Source", "Source next", "Input", "Input next", "AV", "Entrada")
+            ),
+            RemotePairingCheck("MENU  MENÚ", "¿Abre el menú?", listOf("Menu", "Settings", "Ajustes"))
+        )
+        DeviceCategory.CAMERA -> listOf(
+            RemotePairingCheck("PWR  ENCENDER / APAGAR", "¿Se enciende o apaga la cámara?", power = true),
+            RemotePairingCheck("SHUTTER  DISPARAR", "¿Dispara la cámara?", listOf("Shutter", "Shoot", "Capture", "Photo")),
+            RemotePairingCheck("ZOOM +  ACERCAR", "¿Acerca el zoom?", listOf("Zoom +", "Zoom plus", "Zoom in", "Tele")),
+            RemotePairingCheck("PLAY  REVISAR", "¿Abre la reproducción o revisión?", listOf("Playback", "Play", "Review"))
+        )
+    }
+
+    private fun resolveRemotePairingChecks(
+        category: DeviceCategory,
+        buttons: List<CustomRemoteButton>
+    ): List<Pair<RemotePairingCheck, CustomRemoteButton>> {
+        val consumed = mutableSetOf<String>()
+        val resolved = mutableListOf<Pair<RemotePairingCheck, CustomRemoteButton>>()
+        for (check in remotePairingChecks(category)) {
+            val button = if (check.power) {
+                buttons.firstOrNull { value -> value.id !in consumed && isPowerButtonName(value.name) }
+            } else {
+                val wanted = check.aliases.map(::normalizedRemoteButtonName)
+                buttons.firstOrNull { value ->
+                    if (value.id in consumed) return@firstOrNull false
+                    val name = normalizedRemoteButtonName(value.name)
+                    wanted.any { alias -> name == alias || name.startsWith("$alias ") }
+                }
+            }
+            if (check.power && button == null && category != DeviceCategory.CAMERA) return emptyList()
+            if (button != null) {
+                consumed += button.id
+                resolved += check to button
+            }
+        }
+        return resolved.take(3)
     }
 
     private fun paceHelp(pace: ScanPace): String = when (pace) {
@@ -2690,6 +4544,27 @@ class MainActivity : Activity() {
         DeviceCategory.PROJECTOR -> listOf(
             "Power", "Source", "Menu", "OK", "Arriba", "Abajo",
             "Izquierda", "Derecha", "Back", "Mute", "Freeze"
+        )
+        DeviceCategory.SET_TOP_BOX,
+        DeviceCategory.MEDIA_BOX -> listOf(
+            "Power", "Home", "Menu", "Back", "OK", "Arriba", "Abajo", "Izquierda", "Derecha",
+            "Channel +", "Channel -", "Guide", "Info", "Play", "Pause"
+        )
+        DeviceCategory.DVD_PLAYER,
+        DeviceCategory.BLU_RAY -> listOf(
+            "Power", "Eject", "Menu", "Back", "OK", "Arriba", "Abajo", "Izquierda", "Derecha",
+            "Play", "Pause", "Stop", "Previous", "Next", "Rewind", "Fast forward"
+        )
+        DeviceCategory.AV_RECEIVER,
+        DeviceCategory.SOUND_BAR -> listOf(
+            "Power", "Input", "Vol +", "Vol -", "Mute", "Mode", "Menu", "OK"
+        )
+        DeviceCategory.FAN -> listOf(
+            "Power", "Speed +", "Speed -", "Mode", "Swing", "Timer", "Light"
+        )
+        DeviceCategory.CAMERA -> listOf(
+            "Power", "Shutter", "Zoom +", "Zoom -", "Menu", "Playback", "OK",
+            "Arriba", "Abajo", "Izquierda", "Derecha"
         )
     }
 
@@ -2735,7 +4610,33 @@ class MainActivity : Activity() {
     private fun oledMode(): Boolean = preferences.getBoolean(PREF_OLED_MODE, true)
 
     private fun screenBackground(): Int =
-        if (oledMode()) Color.BLACK else Color.rgb(18, 18, 18)
+        if (oledMode()) Color.BLACK else Color.rgb(7, 10, 15)
+
+    private fun setKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun performClickHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+    }
+
+    private fun performSuccessHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        }
+    }
+
+    private fun performErrorHaptic() {
+        if (::contentHost.isInitialized) {
+            contentHost.performHapticFeedback(HapticFeedbackConstants.REJECT)
+        }
+    }
 
     private fun simpleTextWatcher(action: () -> Unit) = object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -2764,8 +4665,20 @@ class MainActivity : Activity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    @Deprecated("Activity back handling is kept for Android 11 compatibility without extra dependencies.")
+    override fun onBackPressed() {
+        val action = screenBackAction
+        if (action != null) {
+            performClickHaptic()
+            action()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
     override fun onDestroy() {
         screenGeneration += 1
+        setKeepScreenOn(false)
         scanner.close()
         worker.shutdownNow()
         super.onDestroy()

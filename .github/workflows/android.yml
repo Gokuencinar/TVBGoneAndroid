@@ -144,4 +144,4 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: TVBGoneAndroid build ${{ github.run_number }}
           files: dist/TVBGoneAndroid.apk
-          generate_release_notes: false
+          generate_release_notes: true

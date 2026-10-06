@@ -4,6 +4,42 @@ Historial de cambios de **TVBGoneAndroid**.
 
 **Compatibilidad:** Android 11 o posterior (`minSdk 30`). El soporte de emisión depende del hardware disponible: blaster IR integrado compatible con `ConsumerIrManager` o adaptador IR estéreo por audio.
 
+## Próxima versión
+
+### Nuevo
+- Apariencia cyberpunk/gamer con interfaz HUD, superficies oscuras y acentos neón cian, magenta, violeta y verde.
+- Asistente de mando tipo Mi Remote: dispositivo → marca → prueba guiada de códigos con Sí/No → guardar automáticamente el perfil confirmado.
+- Catálogo de mandos ampliado a TV, decodificador, aire acondicionado, ventilador, TV Box/streaming, DVD, Blu-ray, receptor A/V, barra de sonido, proyector y cámara.
+- Marcas populares disponibles de inmediato y catálogo ampliado dinámicamente desde Flipper-IRDB, Flipper IRDB oficial e IRDB Web.
+- Los mandos guardados conservan marca, modelo y origen del perfil cuando proceden del catálogo online.
+- Estado `IR // READY` / `IR // CHECK` visible en la cabecera de cada pantalla.
+- Feedback háptico para navegación, transmisión, éxito y error.
+- La app recuerda la última pestaña, categoría, región y ritmo de barrido usados.
+- La pantalla permanece activa mientras se ejecuta un barrido IR.
+- Las actualizaciones muestran un resumen de las notas de la release antes de descargar la APK.
+- Nueva pestaña **Mando** con interfaz de mando universal: Power, volumen, canales, mute, entradas, navegación/OK, media, teclado numérico y controles adicionales según las señales disponibles.
+- Las señales compatibles de los mandos descargados desde la biblioteca online pueden guardarse juntas como perfiles reutilizables en la pestaña Mando.
+- Compartir un mando genera ahora un archivo `.ir` real y temporal con permiso de lectura para la aplicación receptora.
+
+### Mejorado
+- La lista de marcas de Mando incorpora índice alfabético `A–Z`/`#` tipo Mi Remote, agrupación por inicial y filtrado combinado con el buscador de texto.
+- Tras elegir una marca, Mando prueba primero Encendido/Apagado; `NO` carga el siguiente código y `SÍ` avanza a otro control relevante (volumen, entrada, canal, temperatura, navegación, etc.) antes de confirmar el mando.
+- La pestaña Mando usa layouts específicos por tipo de dispositivo y mantiene controles no reconocidos en `Más controles` para no perder funciones.
+- La carga de marcas/perfiles es progresiva para evitar bloquear la interfaz cuando una fuente online tarda o no está disponible.
+- Barra inferior, tarjetas, botones, campos, métricas, controles segmentados y estados vacíos rediseñados para mayor contraste y respuesta visual.
+- El estado del accesorio en Control abre Ajustes / Info con un toque.
+- El botón/gesto Atrás de Android respeta la navegación interna al entrar en IR Online.
+- Se descartan respuestas antiguas de la carga de marcas online al cambiar rápidamente de fuente.
+- Targets táctiles y estados seleccionados ampliados en los principales controles.
+- Tocar un mando guardado en Equipos abre directamente el nuevo modo de mando completo.
+- La antigua pestaña Diagnóstico pasa a llamarse **Ajustes / Info** y conserva todas las comprobaciones técnicas, copia de seguridad, actualizaciones y créditos.
+- Ajustes / Info adopta el mismo bloque de créditos de los tweaks iOS: avatar circular, `Gokuencinar · GokuEn`, acceso a GokuEnREPO y botón Buy Me a Coffee.
+
+### Corregido
+- Al terminar un barrido universal, la tarjeta permanece visible para poder pulsar `FUNCIONÓ` y elegir entre los últimos candidatos.
+- Ajustes / Info se refresca correctamente al conceder el permiso de micrófono.
+- Ajustes / Info deja de mostrar como hechos ajustes de audio que la app no puede verificar y los presenta como recomendaciones.
+
 ## 0.1.0-android — 2026-09-23
 
 ### Nuevo

@@ -60,7 +60,15 @@ data class IrCode(
 enum class DeviceCategory(val title: String, val shortTitle: String) {
     TELEVISION("Televisores", "TV"),
     AIR_CONDITIONER("Aires acondicionados", "Aire"),
-    PROJECTOR("Proyectores", "Proyector")
+    PROJECTOR("Proyectores", "Proyector"),
+    SET_TOP_BOX("Decodificadores", "Deco"),
+    FAN("Ventiladores", "Ventilador"),
+    MEDIA_BOX("TV Box / Streaming", "TV Box"),
+    DVD_PLAYER("DVD", "DVD"),
+    BLU_RAY("Blu-ray", "Blu-ray"),
+    AV_RECEIVER("Receptores A/V", "A/V"),
+    SOUND_BAR("Barras de sonido", "Soundbar"),
+    CAMERA("Cámaras", "Cámara")
 }
 
 enum class TvRegion(val title: String) {
